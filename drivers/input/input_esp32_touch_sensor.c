@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 Espressif Systems (Shanghai) Co., Ltd.
+ * Copyright (c) 2024 Espressif Systems (Shanghai) Co., Ltd.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -16,13 +16,12 @@
 #include <soc/periph_defs.h>
 #include <hal/touch_sensor_types.h>
 #include <hal/touch_sensor_hal.h>
+#include <driver/touch_sensor_common.h>
 #include <driver/rtc_io.h>
+#include <esp_private/rtc_ctrl.h>
 #include <esp_intr_alloc.h>
 
 LOG_MODULE_REGISTER(espressif_esp32_touch, CONFIG_INPUT_LOG_LEVEL);
-
-BUILD_ASSERT(!IS_ENABLED(CONFIG_COUNTER_RTC_ESP32),
-	     "Conflict detected: COUNTER_RTC_ESP32 enabled");
 
 #define ESP32_SCAN_DONE_MAX_COUNT 5
 
@@ -73,14 +72,9 @@ struct esp32_touch_sensor_channel_data {
 #endif /* defined(CONFIG_SOC_SERIES_ESP32S2) || defined(CONFIG_SOC_SERIES_ESP32S3) */
 };
 
-struct esp32_touch_sensor_data {
-	uint32_t rtc_intr_msk;
-};
-
-static void esp32_touch_sensor_interrupt_cb(void *arg)
+static void esp32_touch_sensor_isr_handler(void *arg)
 {
 	const struct device *dev = arg;
-	struct esp32_touch_sensor_data *dev_data = dev->data;
 	const struct esp32_touch_sensor_config *dev_cfg = dev->config;
 	const struct esp32_touch_sensor_channel_config *channel_cfg;
 	const int num_channels = dev_cfg->num_channels;
@@ -140,33 +134,6 @@ static void esp32_touch_sensor_interrupt_cb(void *arg)
 	}
 }
 
-static void esp32_rtc_isr(void *arg)
-{
-	uint32_t status = REG_READ(RTC_CNTL_INT_ST_REG);
-
-	if (arg != NULL) {
-		const struct device *dev = arg;
-		struct esp32_touch_sensor_data *dev_data = dev->data;
-
-		if (dev_data->rtc_intr_msk & status) {
-			esp32_touch_sensor_interrupt_cb(arg);
-		}
-	}
-
-	REG_WRITE(RTC_CNTL_INT_CLR_REG, status);
-}
-
-static esp_err_t esp32_rtc_isr_install(intr_handler_t intr_handler, const void *handler_arg)
-{
-	esp_err_t err;
-
-	REG_WRITE(RTC_CNTL_INT_ENA_REG, 0);
-	REG_WRITE(RTC_CNTL_INT_CLR_REG, UINT32_MAX);
-	err = esp_intr_alloc(ETS_RTC_CORE_INTR_SOURCE, 0, intr_handler, (void *)handler_arg, NULL);
-
-	return err;
-}
-
 /**
  * Handle debounced touch sensor touch state.
  */
@@ -194,7 +161,6 @@ static void esp32_touch_sensor_change_deferred(struct k_work *work)
 
 static int esp32_touch_sensor_init(const struct device *dev)
 {
-	struct esp32_touch_sensor_data *dev_data = dev->data;
 	const struct esp32_touch_sensor_config *dev_cfg = dev->config;
 	const int num_channels = dev_cfg->num_channels;
 
@@ -230,14 +196,7 @@ static int esp32_touch_sensor_init(const struct device *dev)
 			return -EINVAL;
 		}
 #endif  /* defined(CONFIG_SOC_SERIES_ESP32S2) || defined(CONFIG_SOC_SERIES_ESP32S3) */
-
-		gpio_num_t gpio_num = touch_sensor_channel_io_map[channel_cfg->channel_num];
-
-		rtc_gpio_init(gpio_num);
-		rtc_gpio_set_direction(gpio_num, RTC_GPIO_MODE_DISABLED);
-		rtc_gpio_pulldown_dis(gpio_num);
-		rtc_gpio_pullup_dis(gpio_num);
-
+		touch_pad_io_init(channel_cfg->channel_num);
 		touch_hal_config(channel_cfg->channel_num);
 #if defined(CONFIG_SOC_SERIES_ESP32)
 		touch_hal_set_threshold(channel_cfg->channel_num, 0);
@@ -289,8 +248,8 @@ static int esp32_touch_sensor_init(const struct device *dev)
 	touch_hal_timeout_set_threshold(SOC_TOUCH_PAD_THRESHOLD_MAX);
 #endif /* defined(CONFIG_SOC_SERIES_ESP32) */
 
-	dev_data->rtc_intr_msk = ESP32_RTC_INTR_MSK;
-	esp32_rtc_isr_install(&esp32_rtc_isr, dev);
+	rtc_isr_register(esp32_touch_sensor_isr_handler, (void *)dev, ESP32_RTC_INTR_MSK, 0);
+
 #if defined(CONFIG_SOC_SERIES_ESP32)
 	touch_hal_intr_enable();
 #elif defined(CONFIG_SOC_SERIES_ESP32S2) || defined(CONFIG_SOC_SERIES_ESP32S3)
@@ -335,12 +294,10 @@ static int esp32_touch_sensor_init(const struct device *dev)
 		.channel_data = esp32_touch_sensor_channel_data_##inst,				\
 	};											\
 												\
-	static struct esp32_touch_sensor_data esp32_touch_sensor_data_##inst;			\
-												\
 	DEVICE_DT_INST_DEFINE(inst,								\
 			      &esp32_touch_sensor_init,						\
 			      NULL,								\
-			      &esp32_touch_sensor_data_##inst,					\
+			      NULL,								\
 			      &esp32_touch_sensor_config_##inst,				\
 			      POST_KERNEL, CONFIG_INPUT_INIT_PRIORITY,				\
 			      NULL);
