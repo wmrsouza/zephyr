@@ -10,6 +10,7 @@ supported:
   - uart
   - nvs
   - pwm
+  - i2s
 testing:
   ignore_tags:
     - net
