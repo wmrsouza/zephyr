@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 Lothar Felten <lothar.felten@gmail.com>
+ * Copyright (c) 2024-2025 Lothar Felten <lothar.felten@gmail.com>
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -79,6 +79,18 @@
 		com-invdir;
 		prechargep = <0x22>;
 	};
+};
+
+&i2s0 {
+	pinctrl-0 = <&i2s0_default>;
+	pinctrl-names = "default";
+	status = "disabled";
+};
+
+&i2s1 {
+	pinctrl-0 = <&i2s1_default>;
+	pinctrl-names = "default";
+	status = "disabled";
 };
 
 &spi3 {
