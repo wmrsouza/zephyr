@@ -30,7 +30,6 @@ struct xpt2046_data {
 	struct gpio_callback int_gpio_cb;
 	struct k_work work;
 	struct k_work_delayable dwork;
-	uint8_t rbuf[9];
 	uint32_t last_x;
 	uint32_t last_y;
 	bool pressed;
@@ -61,18 +60,6 @@ struct measurement {
 #define POWER_ON	      0x03
 #define CONVERT_U16(buf, idx) ((uint16_t)((buf[idx] & 0x7f) << 5) | (buf[idx + 1] >> 3))
 
-/* Read all Z1, X, Y, Z2 channels using 16 Clocks-per-Conversion mode.
- * See the manual https://www.waveshare.com/w/upload/9/98/XPT2046-EN.pdf for details.
- * Each follow-up command interleaves with previous conversion.
- * So first command starts at byte 0. Second command starts at byte 2.
- */
-static uint8_t tbuf[9] = {
-	[0] = START | CHANNEL(CH_Z1) | POWER_ON,
-	[2] = START | CHANNEL(CH_Z2) | POWER_ON,
-	[4] = START | CHANNEL(CH_X) | POWER_ON,
-	[6] = START | CHANNEL(CH_Y) | POWER_OFF,
-};
-
 static void xpt2046_isr_handler(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
 	struct xpt2046_data *data = CONTAINER_OF(cb, struct xpt2046_data, int_gpio_cb);
@@ -82,21 +69,36 @@ static void xpt2046_isr_handler(const struct device *dev, struct gpio_callback *
 	k_work_submit(&data->work);
 }
 
-static int xpt2046_read_and_cumulate(const struct spi_dt_spec *bus, const struct spi_buf_set *tx,
-				     const struct spi_buf_set *rx, struct measurement *meas)
+static int xpt2046_read_and_cumulate(const struct spi_dt_spec *bus, struct measurement *meas)
 {
-	int ret = spi_transceive_dt(bus, tx, rx);
+	int ret;
 
+	/* Read all Z1, X, Y, Z2 channels using 16 Clocks-per-Conversion mode.
+	* See the manual https://www.waveshare.com/w/upload/9/98/XPT2046-EN.pdf for details.
+	* Each follow-up command interleaves with previous conversion.
+	* So first command starts at byte 0. Second command starts at byte 2.
+	*/
+	uint8_t tbuf[9] = {
+		[0] = START | CHANNEL(CH_Z1) | POWER_ON,
+		[2] = START | CHANNEL(CH_Z2) | POWER_ON,
+		[4] = START | CHANNEL(CH_X) | POWER_ON,
+		[6] = START | CHANNEL(CH_Y) | POWER_OFF,
+	};
+	uint8_t rbuf[9];
+	const struct spi_buf txb = {.buf = tbuf, .len = sizeof(tbuf)};
+	const struct spi_buf rxb = {.buf = rbuf, .len = sizeof(rbuf)};
+	const struct spi_buf_set tx_bufs = {.buffers = &txb, .count = 1};
+	const struct spi_buf_set rx_bufs = {.buffers = &rxb, .count = 1};
+
+	ret = spi_transceive_dt(bus, &tx_bufs, &rx_bufs);
 	if (ret < 0) {
-		LOG_ERR("spi_transceive() %d\n", ret);
+		LOG_ERR("spi_transceive_dt(): %d", ret);
 		return ret;
 	}
 
-	uint8_t *buf = rx->buffers->buf;
-
-	meas->z += CONVERT_U16(buf, 1) + 4096 - CONVERT_U16(buf, 3);
-	meas->x += CONVERT_U16(buf, 5);
-	meas->y += CONVERT_U16(buf, 7);
+	meas->z += CONVERT_U16(rbuf, 1) + 4096 - CONVERT_U16(rbuf, 3);
+	meas->x += CONVERT_U16(rbuf, 5);
+	meas->y += CONVERT_U16(rbuf, 7);
 
 	return 0;
 }
@@ -107,14 +109,15 @@ static void xpt2046_release_handler(struct k_work *kw)
 	struct xpt2046_data *data = CONTAINER_OF(dw, struct xpt2046_data, dwork);
 	struct xpt2046_config *config = (struct xpt2046_config *)data->dev->config;
 
-	if (!data->pressed) {
-		return;
-	}
-
 	/* Check if touch is still pressed */
 	if (gpio_pin_get_dt(&config->int_gpio) == 0) {
 		data->pressed = false;
 		input_report_key(data->dev, INPUT_BTN_TOUCH, 0, true, K_FOREVER);
+
+		int ret = gpio_add_callback(config->int_gpio.port, &data->int_gpio_cb);
+		if (ret < 0) {
+			LOG_ERR("Could not set gpio callback");
+		}
 	} else {
 		/* Re-check later */
 		k_work_reschedule(&data->dwork, K_MSEC(10));
@@ -123,52 +126,51 @@ static void xpt2046_release_handler(struct k_work *kw)
 
 static void xpt2046_work_handler(struct k_work *kw)
 {
+	int ret;
 	struct xpt2046_data *data = CONTAINER_OF(kw, struct xpt2046_data, work);
 	struct xpt2046_config *config = (struct xpt2046_config *)data->dev->config;
-	int ret;
-
-	const struct spi_buf txb = {.buf = tbuf, .len = sizeof(tbuf)};
-	const struct spi_buf rxb = {.buf = data->rbuf, .len = sizeof(data->rbuf)};
-	const struct spi_buf_set tx_bufs = {.buffers = &txb, .count = 1};
-	const struct spi_buf_set rx_bufs = {.buffers = &rxb, .count = 1};
 
 	/* Run number of reads and calculate average */
 	int rounds = config->reads;
 	struct measurement meas = {0};
 
 	for (int i = 0; i < rounds; i++) {
-		if (xpt2046_read_and_cumulate(&config->bus, &tx_bufs, &rx_bufs, &meas) != 0) {
+		if (xpt2046_read_and_cumulate(&config->bus, &meas) != 0) {
+			ret = gpio_add_callback(config->int_gpio.port, &data->int_gpio_cb);
+			if (ret < 0) {
+				LOG_ERR("Could not set gpio callback");
+			}
 			return;
 		}
 	}
 	meas.x /= rounds;
 	meas.y /= rounds;
 	meas.z /= rounds;
-
-	/* Calculate Xp = M * Xt + C using fixed point aritchmetics, where
-	 * Xp is the point in screen coordinates, Xt is the touch coordinates.
-	 * Use signed int32_t for calculation to ensure that we cover the roll-over to negative
-	 * values and return zero instead.
-	 */
-	int32_t mx = (config->screen_size_x << 16) / (config->max_x - config->min_x);
-	int32_t cx = (config->screen_size_x << 16) - mx * config->max_x;
-	int32_t x = mx * meas.x + cx;
-
-	x = (x < 0 ? 0 : x) >> 16;
-
-	int32_t my = (config->screen_size_y << 16) / (config->max_y - config->min_y);
-	int32_t cy = (config->screen_size_y << 16) - my * config->max_y;
-	int32_t y = my * meas.y + cy;
-
-	y = (y < 0 ? 0 : y) >> 16;
-
-	bool pressed = meas.z > config->threshold;
+	LOG_DBG("meas: x=%4u y=%4u z=%4u", meas.x, meas.y, meas.z);
 
 	/* Don't send any other than "pressed" events.
 	 * releasing seem to cause just random noise
 	 */
-	if (pressed) {
-		LOG_DBG("raw: x=%4u y=%4u ==> x=%4d y=%4d", meas.x, meas.y, x, y);
+	data->pressed = meas.z > config->threshold;
+	if (data->pressed) {
+		/* Calculate Xp = M * Xt + C using fixed point aritchmetics, where
+		* Xp is the point in screen coordinates, Xt is the touch coordinates.
+		* Use signed int32_t for calculation to ensure that we cover the roll-over
+		* to negative values and return zero instead.
+		*/
+		int32_t mx = (config->screen_size_x << 16) / (config->max_x - config->min_x);
+		int32_t cx = (config->screen_size_x << 16) - mx * config->max_x;
+		int32_t x = mx * meas.x + cx;
+
+		x = (x < 0 ? 0 : x) >> 16;
+
+		int32_t my = (config->screen_size_y << 16) / (config->max_y - config->min_y);
+		int32_t cy = (config->screen_size_y << 16) - my * config->max_y;
+		int32_t y = my * meas.y + cy;
+
+		y = (y < 0 ? 0 : y) >> 16;
+
+		LOG_DBG("screen: x=%4d y=%4d", x, y);
 
 		input_report_abs(data->dev, INPUT_ABS_X, x, false, K_FOREVER);
 		input_report_abs(data->dev, INPUT_ABS_Y, y, false, K_FOREVER);
@@ -176,22 +178,20 @@ static void xpt2046_work_handler(struct k_work *kw)
 
 		data->last_x = x;
 		data->last_y = y;
-		data->pressed = pressed;
 
 		/* Ensure that we send released event */
 		k_work_reschedule(&data->dwork, K_MSEC(100));
-	}
-
-	ret = gpio_add_callback(config->int_gpio.port, &data->int_gpio_cb);
-	if (ret < 0) {
-		LOG_ERR("Could not set gpio callback");
-		return;
+	} else {
+		ret = gpio_add_callback(config->int_gpio.port, &data->int_gpio_cb);
+		if (ret < 0) {
+			LOG_ERR("Could not set gpio callback");
+		}
 	}
 }
 
 static int xpt2046_init(const struct device *dev)
 {
-	int r;
+	int ret;
 	const struct xpt2046_config *config = dev->config;
 	struct xpt2046_data *data = dev->data;
 
@@ -209,24 +209,24 @@ static int xpt2046_init(const struct device *dev)
 		return -ENODEV;
 	}
 
-	r = gpio_pin_configure_dt(&config->int_gpio, GPIO_INPUT);
-	if (r < 0) {
+	ret = gpio_pin_configure_dt(&config->int_gpio, GPIO_INPUT);
+	if (ret < 0) {
 		LOG_ERR("Could not configure interrupt GPIO pin");
-		return r;
+		return ret;
 	}
 
-	r = gpio_pin_interrupt_configure_dt(&config->int_gpio, GPIO_INT_EDGE_TO_ACTIVE);
-	if (r < 0) {
+	ret = gpio_pin_interrupt_configure_dt(&config->int_gpio, GPIO_INT_EDGE_TO_ACTIVE);
+	if (ret < 0) {
 		LOG_ERR("Could not configure interrupt GPIO interrupt.");
-		return r;
+		return ret;
 	}
 
 	gpio_init_callback(&data->int_gpio_cb, xpt2046_isr_handler, BIT(config->int_gpio.pin));
 
-	r = gpio_add_callback(config->int_gpio.port, &data->int_gpio_cb);
-	if (r < 0) {
+	ret = gpio_add_callback(config->int_gpio.port, &data->int_gpio_cb);
+	if (ret < 0) {
 		LOG_ERR("Could not set gpio callback");
-		return r;
+		return ret;
 	}
 
 	LOG_INF("Init '%s' device", dev->name);
