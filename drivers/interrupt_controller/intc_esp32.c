@@ -502,6 +502,11 @@ static void IRAM_ATTR shared_intr_isr(void *arg)
 		if (!sh_vec->disabled) {
 			if ((sh_vec->statusreg == NULL) ||
 				(*sh_vec->statusreg & sh_vec->statusmask)) {
+				/* if (sh_vec->statusreg == (uint32_t *)0x3FF4F010) */
+				/* { */
+				/* 	LOG_INF("arg: 0x08%"PRIX32, (uint32_t)arg); */
+				/* 	LOG_INF("statusmask: 0x%08"PRIX32, sh_vec->statusmask); */
+				/* } */
 				sh_vec->isr(sh_vec->arg);
 			}
 		}
