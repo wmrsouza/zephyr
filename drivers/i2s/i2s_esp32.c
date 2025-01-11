@@ -340,6 +340,7 @@ static void IRAM_ATTR i2s_esp32_tx_handler(void *arg)
 }
 #endif /* !SOC_GDMA_SUPPORTED */
 
+uint32_t i2s_esp32_config_dma_counter = 0;
 int i2s_esp32_config_dma(const struct device *dev, enum i2s_dir dir,
 			 const struct i2s_esp32_stream *stream)
 {
@@ -349,7 +350,7 @@ int i2s_esp32_config_dma(const struct device *dev, enum i2s_dir dir,
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	struct dma_config dma_cfg = {0};
 	struct dma_block_config dma_blk = {0};
-
+LOG_INF("i2s_esp32_config_dma():%"PRIu32, ++i2s_esp32_config_dma_counter);
 	dma_blk.block_size = stream->data->mem_block_len;
 	if (dir == I2S_DIR_RX) {
 		dma_blk.dest_address = (uint32_t)stream->data->mem_block;
@@ -373,6 +374,7 @@ int i2s_esp32_config_dma(const struct device *dev, enum i2s_dir dir,
 	return err;
 }
 
+uint32_t i2s_esp32_start_dma_counter = 0;
 static int i2s_esp32_start_dma(const struct device *dev, enum i2s_dir dir)
 {
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
@@ -380,7 +382,7 @@ static int i2s_esp32_start_dma(const struct device *dev, enum i2s_dir dir)
 	const struct i2s_esp32_stream *stream = NULL;
 	unsigned int key;
 	int err, ret = 0;
-
+LOG_INF("i2s_esp32_start_dma():%"PRIu32, ++i2s_esp32_start_dma_counter);
 	if (dir == I2S_DIR_RX) {
 		/* stream = &dev_cfg->rx; */
 	} else if (dir == I2S_DIR_TX) {
@@ -423,6 +425,7 @@ unlock:
 	return ret;
 }
 
+uint32_t i2s_esp32_restart_dma_counter = 0;
 static int i2s_esp32_restart_dma(const struct device *dev, enum i2s_dir dir)
 {
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
@@ -430,7 +433,7 @@ static int i2s_esp32_restart_dma(const struct device *dev, enum i2s_dir dir)
 	const struct i2s_esp32_stream *stream;
 	void *src = NULL, *dst = NULL;
 	int err;
-
+LOG_INF("i2s_esp32_restart_dma():%"PRIu32, ++i2s_esp32_restart_dma_counter);
 	if (dir == I2S_DIR_RX) {
 		stream = &dev_cfg->rx;
 		dst = stream->data->mem_block;
@@ -471,6 +474,7 @@ static int i2s_esp32_restart_dma(const struct device *dev, enum i2s_dir dir)
 
 static int i2s_esp32_rx_start_transfer(const struct device *dev)
 {
+LOG_INF("i2s_esp32_rx_start_transfer()");
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
 	const i2s_hal_context_t *hal = &dev_cfg->hal;
@@ -502,6 +506,7 @@ static int i2s_esp32_rx_start_transfer(const struct device *dev)
 
 static int i2s_esp32_tx_start_transfer(const struct device *dev)
 {
+LOG_INF("i2s_esp32_tx_start_transfer()");
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream = &dev_cfg->tx;
 	const i2s_hal_context_t *hal = &dev_cfg->hal;
@@ -537,6 +542,7 @@ static int i2s_esp32_tx_start_transfer(const struct device *dev)
 
 static void i2s_esp32_rx_stop_transfer(const struct device *dev)
 {
+LOG_INF("i2s_esp32_rx_stop_transfer()");
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
 
@@ -560,6 +566,7 @@ static void i2s_esp32_rx_stop_transfer(const struct device *dev)
 
 static void i2s_esp32_tx_stop_transfer(const struct device *dev)
 {
+LOG_INF("i2s_esp32_tx_stop_transfer()");
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream = &dev_cfg->tx;
 
@@ -1027,17 +1034,19 @@ static int i2s_esp32_trigger(const struct device *dev, enum i2s_dir dir, enum i2
 	return 0;
 }
 
+uint32_t i2s_esp32_read_cunter = 0;
 static int i2s_esp32_read(const struct device *dev, void **mem_block, size_t *size)
 {
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	struct queue_item item;
 	int err;
-
+LOG_INF("i2s_esp32_read():%"PRIu32, ++i2s_esp32_read_cunter);
 	if (dev_cfg->rx.data->state == I2S_STATE_NOT_READY) {
 		LOG_ERR("RX invalid state: %d", (int)dev_cfg->rx.data->state);
 		return -EIO;
 	} else if (dev_cfg->rx.data->state == I2S_STATE_ERROR &&
 		   k_msgq_num_used_get(&dev_cfg->rx.data->queue) == 0) {
+		LOG_ERR("rx.state == I2S_STATE_ERROR");
 		LOG_ERR("RX queue empty");
 		return -EIO;
 	}
@@ -1055,11 +1064,12 @@ static int i2s_esp32_read(const struct device *dev, void **mem_block, size_t *si
 	return 0;
 }
 
+uint32_t i2s_esp32_write_cunter = 0;
 static int i2s_esp32_write(const struct device *dev, void *mem_block, size_t size)
 {
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	int err;
-
+LOG_INF("i2s_esp32_write():%"PRIu32, ++i2s_esp32_write_cunter);
 	if (dev_cfg->tx.data->state != I2S_STATE_RUNNING &&
 	    dev_cfg->tx.data->state != I2S_STATE_READY) {
 		LOG_ERR("TX Invalid state: %d", (int)dev_cfg->tx.data->state);
