@@ -972,6 +972,19 @@ SECTIONS
    */
 #if defined(CONFIG_ESP_SPIRAM)
 
+/* This section holds .ext_ram.text code, and will be put in PSRAM */
+  .ext_ram.text :
+  {
+    . = ALIGN(4);
+    _ext_ram_text_start = ABSOLUTE(.);
+    *(.ext_ram.literal .ext_ram.literal.*)
+    *(.ext_ram.text .ext_ram.text.*)
+    *(.ext_ram.entry.literal)
+    *(.ext_ram.entry.text)
+    _ext_ram_text_end = ABSOLUTE(.);
+    . = ALIGN(4);
+  } GROUP_DATA_LINK_IN(ext_iram_seg, ROMABLE_REGION)
+
   /* This section is required to skip flash rodata sections, because `ext_[id]ram_seg`
    * and `drom0_0_seg` are on the same bus */
   .ext_ram.dummy (NOLOAD):
