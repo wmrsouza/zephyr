@@ -18,6 +18,9 @@
 #include <ksched.h>
 #include <wait_q.h>
 
+#include <zephyr/logging/log.h>
+LOG_MODULE_REGISTER(mem_slab, LOG_LEVEL_DBG);
+
 #ifdef CONFIG_OBJ_CORE_MEM_SLAB
 static struct k_obj_type obj_type_mem_slab;
 
@@ -230,6 +233,7 @@ int k_mem_slab_alloc(struct k_mem_slab *slab, void **mem, k_timeout_t timeout)
 		*mem = slab->free_list;
 		slab->free_list = *(char **)(slab->free_list);
 		slab->info.num_used++;
+LOG_DBG("num_used: %"PRIu32, slab->info.num_used);
 		__ASSERT((slab->free_list == NULL &&
 			  slab->info.num_used == slab->info.num_blocks) ||
 			 slab_ptr_is_good(slab, slab->free_list),
@@ -293,7 +297,7 @@ void k_mem_slab_free(struct k_mem_slab *slab, void *mem)
 	*(char **) mem = slab->free_list;
 	slab->free_list = (char *) mem;
 	slab->info.num_used--;
-
+LOG_DBG("num_used: %"PRIu32, slab->info.num_used);
 	SYS_PORT_TRACING_OBJ_FUNC_EXIT(k_mem_slab, free, slab);
 
 	k_spin_unlock(&slab->lock, key);

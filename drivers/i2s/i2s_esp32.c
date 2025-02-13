@@ -37,6 +37,24 @@ LOG_MODULE_REGISTER(i2s_esp32, CONFIG_I2S_LOG_LEVEL);
 #define I2S_ESP32_IS_DIR_INST_EN(i, d) DT_INST_DMAS_HAS_NAME(i, d) || DT_INST_IRQ_HAS_NAME(i, d)
 #define I2S_ESP32_IS_DIR_EN(d)  LISTIFY(I2S_ESP32_NUM_INST_OK, I2S_ESP32_IS_DIR_INST_EN, (||), d)
 
+#include <zephyr/drivers/gpio.h>
+
+#define I2S_DBG_GPIO_NODE DT_NODELABEL(gpio0)
+
+static const struct gpio_dt_spec i2s_dbg_rx_pin =
+{
+	.port = DEVICE_DT_GET_OR_NULL(I2S_DBG_GPIO_NODE),
+	.pin = 15,
+	.dt_flags = 0
+};
+
+static const struct gpio_dt_spec i2s_dbg_tx_pin =
+{
+	.port = DEVICE_DT_GET_OR_NULL(I2S_DBG_GPIO_NODE),
+	.pin = 17,
+	.dt_flags = 0
+};
+
 struct queue_item {
 	void *buffer;
 	size_t size;
@@ -94,17 +112,21 @@ struct i2s_esp32_data {
 	i2s_hal_clock_info_t clk_info;
 };
 
+uint32_t i2s_esp32_get_source_clk_freq_counter = 0;
 uint32_t i2s_esp32_get_source_clk_freq(i2s_clock_src_t clk_src)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_get_source_clk_freq_counter);
 	uint32_t clk_freq = 0;
 
 	esp_clk_tree_src_get_freq_hz(clk_src, ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &clk_freq);
 	return clk_freq;
 }
 
+uint32_t i2s_esp32_calculate_clock_counter = 0;
 static esp_err_t i2s_esp32_calculate_clock(const struct i2s_config *i2s_cfg, uint8_t channel_length,
 					   i2s_hal_clock_info_t *i2s_hal_clock_info)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_calculate_clock_counter);
 	uint16_t mclk_multiple = 256;
 
 	if (i2s_cfg == NULL) {
@@ -144,8 +166,10 @@ static esp_err_t i2s_esp32_calculate_clock(const struct i2s_config *i2s_cfg, uin
 	return ESP_OK;
 }
 
+uint32_t i2s_esp32_queue_drop_counter = 0;
 static void i2s_esp32_queue_drop(const struct i2s_esp32_stream *stream)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_queue_drop_counter);
 	struct queue_item item;
 
 	while (k_msgq_get(&stream->data->queue, &item, K_NO_WAIT) == 0) {
@@ -158,25 +182,29 @@ static int i2s_esp32_start_dma(const struct device *dev, enum i2s_dir dir);
 
 #if I2S_ESP32_IS_DIR_EN(rx)
 
+uint32_t i2s_esp32_rx_callback_counter = 0;
 #if SOC_GDMA_SUPPORTED
-static void i2s_esp32_rx_callback(const struct device *dma_dev, void *arg, uint32_t channel,
+static void i2s_esp32_rx_callback_(const struct device *dma_dev, void *arg, uint32_t channel,
 				  int status)
 #else
 static void i2s_esp32_rx_callback(void *arg, int status)
 #endif /* SOC_GDMA_SUPPORTED */
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_rx_callback_counter);
 	const struct device *dev = (const struct device *)arg;
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
 	int err;
 
-#if SOC_GDMA_SUPPORTED
+
+#if SOC_GDMA_SUPPORTED /*TODO:*/
 	if (status < 0) {
 #else
 	if (status & I2S_LL_EVENT_RX_DSCR_ERR) {
 #endif /* SOC_GDMA_SUPPORTED */
 		stream->data->state = I2S_STATE_ERROR;
 		LOG_ERR("RX status bad: %d", status);
+LOG_DBG("line: %i", __LINE__);
 		goto rx_disable;
 	}
 
@@ -184,8 +212,10 @@ static void i2s_esp32_rx_callback(void *arg, int status)
 		if (stream->data->state != I2S_STATE_READY) {
 			stream->data->state = I2S_STATE_ERROR;
 			LOG_ERR("RX mem_block NULL");
+LOG_DBG("line: %i", __LINE__);
 			goto rx_disable;
 		} else {
+LOG_DBG("line: %i", __LINE__);
 			return;
 		}
 	}
@@ -214,14 +244,17 @@ static void i2s_esp32_rx_callback(void *arg, int status)
 				(uint32_t)dst, chunk_len);
 		if (err < 0) {
 			LOG_ERR("Failed to reload DMA channel: %"PRIu32, stream->conf->dma_channel);
+LOG_DBG("line: %i", __LINE__);
 			goto rx_disable;
 		}
 
 		i2s_ll_rx_set_eof_num(hal->dev, chunk_len);
+LOG_DBG("rx_eof_num: %"PRIu32, chunk_len);
 
 		err = dma_start(stream->conf->dma_dev, stream->conf->dma_channel);
 		if (err < 0) {
 			LOG_ERR("Failed to start DMA channel: %"PRIu32, stream->conf->dma_channel);
+LOG_DBG("line: %i", __LINE__);
 			goto rx_disable;
 		}
 
@@ -231,6 +264,12 @@ static void i2s_esp32_rx_callback(void *arg, int status)
 	}
 #endif /* SOC_GDMA_SUPPORTED */
 
+err = gpio_pin_toggle_dt(&i2s_dbg_rx_pin);
+if (err < 0) {
+	LOG_DBG("RX dbg rx pin toggle failed");
+}
+
+
 	struct queue_item item = {
 		.buffer = stream->data->mem_block,
 		.size = stream->data->mem_block_len
@@ -239,11 +278,13 @@ static void i2s_esp32_rx_callback(void *arg, int status)
 	err = k_msgq_put(&stream->data->queue, &item, K_NO_WAIT);
 	if (err < 0) {
 		stream->data->state = I2S_STATE_ERROR;
+LOG_DBG("line: %i", __LINE__);
 		goto rx_disable;
 	}
 
 	if (stream->data->state == I2S_STATE_STOPPING) {
 		stream->data->state = I2S_STATE_READY;
+LOG_DBG("line: %i", __LINE__);
 		goto rx_disable;
 	}
 
@@ -251,6 +292,7 @@ static void i2s_esp32_rx_callback(void *arg, int status)
 	if (err < 0) {
 		LOG_ERR("RX failed to allocate memory from slab: %i:", err);
 		stream->data->state = I2S_STATE_ERROR;
+LOG_DBG("line: %i", __LINE__);
 		goto rx_disable;
 	}
 	stream->data->mem_block_len = stream->data->i2s_cfg.block_size;
@@ -259,6 +301,7 @@ static void i2s_esp32_rx_callback(void *arg, int status)
 	if (err < 0) {
 		stream->data->state = I2S_STATE_ERROR;
 		LOG_ERR("Failed to restart RX transfer: %d", err);
+LOG_DBG("line: %i", __LINE__);
 		goto rx_disable;
 	}
 
@@ -268,10 +311,32 @@ rx_disable:
 	stream->conf->stop_transfer(dev);
 }
 
+#if SOC_GDMA_SUPPORTED
+
+static void i2s_esp32_rx_callback(const struct device *dma_dev, void *arg, uint32_t channel,
+				  int status)
+{
+	const struct device *dev = (const struct device *)arg;
+	const struct i2s_esp32_cfg *const dev_cfg = dev->config;
+
+if (status < 0) {
+	LOG_DBG("status: 0x%08"PRIX32, (uint32_t)(-status));
+	} else {
+	LOG_DBG("status: 0x%08"PRIX32, (uint32_t)status);
+	}
+LOG_DBG("dma_pending: %s", dev_cfg->tx.data->dma_pending ? "y" : "n");
+	i2s_esp32_rx_callback_(dma_dev, arg, channel, status);
+LOG_DBG("dma_pending: %s", dev_cfg->tx.data->dma_pending ? "y" : "n");
+}
+
+#endif /* SOC_GDMA_SUPPORTED */
+
 #if !SOC_GDMA_SUPPORTED
 
+uint32_t i2s_esp32_rx_handler_counter = 0;
 static void IRAM_ATTR i2s_esp32_rx_handler(void *arg)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_rx_handler_counter);
 	if (arg == NULL) {
 		return;
 	}
@@ -289,8 +354,10 @@ static void IRAM_ATTR i2s_esp32_rx_handler(void *arg)
 
 #endif /* !SOC_GDMA_SUPPORTED */
 
+uint32_t i2s_esp32_rx_start_transfer_counter = 0;
 static int i2s_esp32_rx_start_transfer(const struct device *dev)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_rx_start_transfer_counter);
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
 	const i2s_hal_context_t *hal = &dev_cfg->hal;
@@ -317,8 +384,10 @@ static int i2s_esp32_rx_start_transfer(const struct device *dev)
 	return 0;
 }
 
+uint32_t i2s_esp32_rx_stop_transfer_counter = 0;
 static void i2s_esp32_rx_stop_transfer(const struct device *dev)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_rx_stop_transfer_counter);
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
 
@@ -345,19 +414,26 @@ static void i2s_esp32_rx_stop_transfer(const struct device *dev)
 
 #if I2S_ESP32_IS_DIR_EN(tx)
 
+uint32_t i2s_esp32_tx_callback_counter = 0;
 #if SOC_GDMA_SUPPORTED
-static void i2s_esp32_tx_callback(const struct device *dma_dev, void *arg, uint32_t channel,
+static void i2s_esp32_tx_callback_(const struct device *dma_dev, void *arg, uint32_t channel,
 				  int status)
 #else
 static void i2s_esp32_tx_callback(void *arg, int status)
 #endif /* SOC_GDMA_SUPPORTED */
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_tx_callback_counter);
 	const struct device *dev = (const struct device *)arg;
 	const struct i2s_esp32_cfg *const dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream = &dev_cfg->tx;
 	struct queue_item item;
 	void *mem_block_tmp;
 	int err;
+
+err = gpio_pin_toggle_dt(&i2s_dbg_tx_pin);
+if (err < 0) {
+	LOG_DBG("TX dbg tx pin toggle failed");
+}
 
 	if (!stream->data->dma_pending) {
 		return;
@@ -372,6 +448,7 @@ static void i2s_esp32_tx_callback(void *arg, int status)
 #endif /* SOC_GDMA_SUPPORTED */
 		stream->data->state = I2S_STATE_ERROR;
 		LOG_ERR("TX bad status: %d", status);
+LOG_DBG("line: %i", __LINE__);
 		goto tx_disable;
 	}
 
@@ -379,8 +456,11 @@ static void i2s_esp32_tx_callback(void *arg, int status)
 		if (stream->data->state != I2S_STATE_READY) {
 			stream->data->state = I2S_STATE_ERROR;
 			LOG_ERR("TX mem_block NULL");
+LOG_DBG("line: %i", __LINE__);
 			goto tx_disable;
 		} else {
+			LOG_DBG("mem_block == NULL && state == I2S_STATE_READY");
+LOG_DBG("line: %i", __LINE__);
 			return;
 		}
 	}
@@ -392,12 +472,14 @@ static void i2s_esp32_tx_callback(void *arg, int status)
 		} else if (stream->data->stop_without_draining == true) {
 			stream->conf->queue_drop(stream);
 			stream->data->state = I2S_STATE_READY;
+LOG_DBG("line: %i", __LINE__);
 			goto tx_disable;
 		}
 	}
 
 	if (stream->data->last_block) {
 		stream->data->state = I2S_STATE_READY;
+LOG_DBG("line: %i", __LINE__);
 		goto tx_disable;
 	}
 
@@ -405,6 +487,7 @@ static void i2s_esp32_tx_callback(void *arg, int status)
 	if (err < 0) {
 		stream->data->state = I2S_STATE_ERROR;
 		LOG_ERR("TX queue empty: %d", err);
+LOG_DBG("line: %i", __LINE__);
 		goto tx_disable;
 	}
 
@@ -417,6 +500,7 @@ static void i2s_esp32_tx_callback(void *arg, int status)
 	if (err < 0) {
 		stream->data->state = I2S_STATE_ERROR;
 		LOG_ERR("Failed to restart TX transfer: %d", err);
+LOG_DBG("line: %i", __LINE__);
 		goto tx_disable;
 	}
 
@@ -428,10 +512,32 @@ tx_disable:
 	stream->conf->stop_transfer(dev);
 }
 
+#if SOC_GDMA_SUPPORTED
+
+static void i2s_esp32_tx_callback(const struct device *dma_dev, void *arg, uint32_t channel,
+				  int status)
+{
+	const struct device *dev = (const struct device *)arg;
+	const struct i2s_esp32_cfg *const dev_cfg = dev->config;
+
+if (status < 0) {
+	LOG_DBG("status: 0x%08"PRIX32, (uint32_t)(-status));
+	} else {
+	LOG_DBG("status: 0x%08"PRIX32, (uint32_t)status);
+	}
+LOG_DBG("dma_pending: %s", dev_cfg->tx.data->dma_pending ? "y" : "n");
+	i2s_esp32_tx_callback_(dma_dev, arg, channel, status);
+LOG_DBG("dma_pending: %s", dev_cfg->tx.data->dma_pending ? "y" : "n");
+}
+
+#endif /* SOC_GDMA_SUPPORTED */
+
 #if !SOC_GDMA_SUPPORTED
 
+uint32_t i2s_esp32_tx_handler_counter = 0;
 static void IRAM_ATTR i2s_esp32_tx_handler(void *arg)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_tx_handler_counter);
 	if (arg == NULL) {
 		return;
 	}
@@ -442,15 +548,20 @@ static void IRAM_ATTR i2s_esp32_tx_handler(void *arg)
 	uint32_t status = i2s_hal_get_intr_status(hal);
 
 	i2s_hal_clear_intr_status(hal, status);
+LOG_DBG("status: 0x%08"PRIX32, status);
 	if (status & I2S_LL_EVENT_TX_EOF) {
+LOG_DBG("dma_pending: %s", dev_cfg->tx.data->dma_pending ? "y" : "n");
 		i2s_esp32_tx_callback((void *)arg, status);
+LOG_DBG("dma_pending: %s", dev_cfg->tx.data->dma_pending ? "y" : "n");
 	}
 }
 
 #endif /* !SOC_GDMA_SUPPORTED */
 
+uint32_t i2s_esp32_tx_start_transfer_counter = 0;
 static int i2s_esp32_tx_start_transfer(const struct device *dev)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_tx_start_transfer_counter);
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream = &dev_cfg->tx;
 	const i2s_hal_context_t *hal = &dev_cfg->hal;
@@ -480,8 +591,10 @@ static int i2s_esp32_tx_start_transfer(const struct device *dev)
 	return 0;
 }
 
+uint32_t i2s_esp32_tx_stop_transfer_counter = 0;
 static void i2s_esp32_tx_stop_transfer(const struct device *dev)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_tx_stop_transfer_counter);
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream = &dev_cfg->tx;
 
@@ -506,9 +619,11 @@ static void i2s_esp32_tx_stop_transfer(const struct device *dev)
 
 #endif /* I2S_ESP32_IS_DIR_EN(tx) */
 
+uint32_t i2s_esp32_config_dma_counter = 0;
 int i2s_esp32_config_dma(const struct device *dev, enum i2s_dir dir,
 			 const struct i2s_esp32_stream *stream)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_config_dma_counter);
 	uint32_t mem_block = (uint32_t)stream->data->mem_block;
 	uint32_t mem_block_size = stream->data->mem_block_len;
 
@@ -602,8 +717,10 @@ int i2s_esp32_config_dma(const struct device *dev, enum i2s_dir dir,
 	return 0;
 }
 
+uint32_t i2s_esp32_start_dma_counter = 0;
 static int i2s_esp32_start_dma(const struct device *dev, enum i2s_dir dir)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_start_dma_counter);
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const i2s_hal_context_t *hal = &(dev_cfg->hal);
 	const struct i2s_esp32_stream *stream = NULL;
@@ -646,6 +763,7 @@ static int i2s_esp32_start_dma(const struct device *dev, enum i2s_dir dir)
 		chunk_len = stream->data->mem_block_len;
 #endif
 		i2s_ll_rx_set_eof_num(hal->dev, chunk_len);
+LOG_DBG("rx_eof_num: %"PRIu32, chunk_len);
 	}
 #endif /* I2S_ESP32_IS_DIR_EN(rx) */
 
@@ -678,8 +796,10 @@ unlock:
 	return err;
 }
 
+uint32_t i2s_esp32_restart_dma_counter = 0;
 static int i2s_esp32_restart_dma(const struct device *dev, enum i2s_dir dir)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_restart_dma_counter);
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const i2s_hal_context_t *hal = &(dev_cfg->hal);
 	const struct i2s_esp32_stream *stream;
@@ -733,6 +853,7 @@ static int i2s_esp32_restart_dma(const struct device *dev, enum i2s_dir dir)
 #if I2S_ESP32_IS_DIR_EN(rx)
 	if (dir == I2S_DIR_RX) {
 		i2s_ll_rx_set_eof_num(hal->dev, chunk_len);
+LOG_DBG("rx_eof_num: %"PRIu16, chunk_len);
 	}
 #endif /* I2S_ESP32_IS_DIR_EN(rx) */
 
@@ -767,8 +888,11 @@ static int i2s_esp32_restart_dma(const struct device *dev, enum i2s_dir dir)
 	return 0;
 }
 
+uint32_t i2s_esp32_initialize_counter = 0;
 static int i2s_esp32_initialize(const struct device *dev)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_initialize_counter);
+
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct device *clk_dev = dev_cfg->clock_dev;
 	const struct i2s_esp32_stream *stream;
@@ -777,6 +901,28 @@ static int i2s_esp32_initialize(const struct device *dev)
 #if !SOC_GDMA_SUPPORTED
 	const i2s_hal_context_t *hal = &(dev_cfg->hal);
 #endif /* !SOC_GDMA_SUPPORTED */
+
+if (!gpio_is_ready_dt(&i2s_dbg_rx_pin)) {
+	LOG_DBG("RX dbg pin device not ready");
+	return -ENODEV;
+}
+
+err = gpio_pin_configure_dt(&i2s_dbg_rx_pin, GPIO_OUTPUT_INACTIVE);
+if (err < 0) {
+	LOG_DBG("RX dbg pin configuration failed");
+	return -ENODEV;
+}
+
+if (!gpio_is_ready_dt(&i2s_dbg_tx_pin)) {
+	LOG_DBG("TX dbg pin device not ready");
+	return -ENODEV;
+}
+
+err = gpio_pin_configure_dt(&i2s_dbg_tx_pin, GPIO_OUTPUT_INACTIVE);
+if (err < 0) {
+	LOG_DBG("TX dbg pin configuration failed");
+	return -ENODEV;
+}
 
 	if (!device_is_ready(clk_dev)) {
 		LOG_ERR("clock control device not ready");
@@ -843,6 +989,8 @@ static int i2s_esp32_initialize(const struct device *dev)
 			LOG_ERR("Could not allocate tx interrupt (err %d)", err);
 			return err;
 		}
+/* LOG_DBG("dev: 0x08%"PRIX32, (uint32_t)dev); */
+/* LOG_DBG("i2s_int_st: 0x08%"PRIX32, (uint32_t)i2s_ll_get_intr_status_reg(hal->dev)); */
 #endif /* SOC_GDMA_SUPPORTED */
 
 		err = k_msgq_alloc_init(&stream->data->queue, sizeof(struct queue_item),
@@ -862,10 +1010,16 @@ static int i2s_esp32_initialize(const struct device *dev)
 	return 0;
 }
 
+uint32_t i2s_esp32_configure_dir_counter = 0;
 static int i2s_esp32_configure_dir(const struct device *dev, enum i2s_dir dir,
 				   const struct i2s_esp32_stream *stream,
 				   const struct i2s_config *i2s_cfg)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_configure_dir_counter);
+if (dir == I2S_DIR_RX) LOG_DBG("dir: I2S_DIR_RX");
+else if (dir == I2S_DIR_TX) LOG_DBG("dir: I2S_DIR_TX");
+else if (dir == I2S_DIR_BOTH) LOG_DBG("dir: I2S_DIR_BOTH");
+else LOG_DBG("dir: Invalid");
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	uint8_t data_format;
 	int err;
@@ -1065,9 +1219,11 @@ static int i2s_esp32_configure_dir(const struct device *dev, enum i2s_dir dir,
 	return 0;
 }
 
+uint32_t i2s_esp32_configure_counter = 0;
 static int i2s_esp32_configure(const struct device *dev, enum i2s_dir dir,
 			       const struct i2s_config *i2s_cfg)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_configure_counter);
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream;
 	int err;
@@ -1138,8 +1294,10 @@ static int i2s_esp32_configure(const struct device *dev, enum i2s_dir dir,
 	return err;
 }
 
+uint32_t i2s_esp32_config_get_counter = 0;
 static const struct i2s_config *i2s_esp32_config_get(const struct device *dev, enum i2s_dir dir)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_config_get_counter);
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream;
 
@@ -1177,9 +1335,16 @@ static const struct i2s_config *i2s_esp32_config_get(const struct device *dev, e
 	return &stream->data->i2s_cfg;
 }
 
+uint32_t i2s_esp32_trigger_stream_counter = 0;
 static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_esp32_stream *stream,
 				    enum i2s_dir dir, enum i2s_trigger_cmd cmd)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_trigger_stream_counter);
+if (dir == I2S_DIR_RX) LOG_DBG("dir: I2S_DIR_RX");
+else if (dir == I2S_DIR_TX) LOG_DBG("dir: I2S_DIR_TX");
+else if (dir == I2S_DIR_BOTH) LOG_DBG("dir: I2S_DIR_BOTH");
+else LOG_DBG("dir: Invalid");
+
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const i2s_hal_context_t *hal = &dev_cfg->hal;
 	unsigned int key;
@@ -1305,8 +1470,10 @@ static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_e
 	return 0;
 }
 
+uint32_t i2s_esp32_trigger_counter = 0;
 static int i2s_esp32_trigger(const struct device *dev, enum i2s_dir dir, enum i2s_trigger_cmd cmd)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_trigger_counter);
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream;
 	int err;
@@ -1377,8 +1544,10 @@ static int i2s_esp32_trigger(const struct device *dev, enum i2s_dir dir, enum i2
 	return err;
 }
 
+uint32_t i2s_esp32_read_counter = 0;
 static int i2s_esp32_read(const struct device *dev, void **mem_block, size_t *size)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_read_counter);
 #if I2S_ESP32_IS_DIR_EN(rx)
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
@@ -1398,6 +1567,7 @@ static int i2s_esp32_read(const struct device *dev, void **mem_block, size_t *si
 		return -EIO;
 	} else if (stream->data->state == I2S_STATE_ERROR &&
 		   k_msgq_num_used_get(&stream->data->queue) == 0) {
+LOG_ERR("rx.state == I2S_STATE_ERROR");
 		LOG_ERR("RX queue empty");
 		return -EIO;
 	}
@@ -1422,8 +1592,10 @@ static int i2s_esp32_read(const struct device *dev, void **mem_block, size_t *si
 #endif /* I2S_ESP32_IS_DIR_EN(rx) */
 }
 
+uint32_t i2s_esp32_write_counter = 0;
 static int i2s_esp32_write(const struct device *dev, void *mem_block, size_t size)
 {
+LOG_DBG("%"PRIu32, ++i2s_esp32_write_counter);
 #if I2S_ESP32_IS_DIR_EN(tx)
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream = &dev_cfg->tx;
