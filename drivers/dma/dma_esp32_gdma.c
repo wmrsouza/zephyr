@@ -67,12 +67,41 @@ struct dma_esp32_config {
 	clock_control_subsys_t clock_subsys;
 };
 
+uint32_t dma_base_time = 0;
+
+uint32_t dma_esp32_isr_handle_rx_counter = 0;
+uint32_t dma_esp32_isr_handle_rx_time = 0;
 static void IRAM_ATTR dma_esp32_isr_handle_rx(const struct device *dev,
 					      struct dma_esp32_channel *rx, uint32_t intr_status)
 {
+uint32_t uptime, delta;
+uptime = k_uptime_get_32();
+if (dma_base_time == 0) dma_base_time = uptime;
+delta = dma_esp32_isr_handle_rx_counter ? (uptime - dma_esp32_isr_handle_rx_time) : 0;
+LOG_DBG("%"PRIu32, ++dma_esp32_isr_handle_rx_counter);
+LOG_DBG("time: %"PRIu32"ms", uptime - dma_base_time);
+LOG_DBG("delta: %"PRIu32"ms", delta);
+LOG_DBG("status: 0x%08"PRIX32, intr_status);
+if (intr_status & GDMA_LL_EVENT_RX_DONE) LOG_DBG("GDMA_LL_EVENT_RX_DONE");
+if (intr_status & GDMA_LL_EVENT_RX_SUC_EOF) LOG_DBG("GDMA_LL_EVENT_RX_SUC_EOF");
+if (intr_status & GDMA_LL_EVENT_RX_ERR_EOF) LOG_DBG("GDMA_LL_EVENT_RX_ERR_EOF");
+if (intr_status & GDMA_LL_EVENT_RX_DESC_ERROR) LOG_DBG("GDMA_LL_EVENT_RX_DESC_ERROR");
+if (intr_status & GDMA_LL_EVENT_RX_DESC_EMPTY) LOG_DBG("GDMA_LL_EVENT_RX_DESC_EMPTY");
+if (intr_status & GDMA_LL_EVENT_RX_WATER_MARK) LOG_DBG("GDMA_LL_EVENT_RX_WATER_MARK");
+if (intr_status & GDMA_LL_EVENT_RX_L1_FIFO_OVF) LOG_DBG("GDMA_LL_EVENT_RX_L1_FIFO_OVF");
+if (intr_status & GDMA_LL_EVENT_RX_L1_FIFO_UDF) LOG_DBG("GDMA_LL_EVENT_RX_L1_FIFO_UDF");
+if (intr_status & GDMA_LL_EVENT_RX_L3_FIFO_OVF) LOG_DBG("GDMA_LL_EVENT_RX_L3_FIFO_OVF");
+if (intr_status & GDMA_LL_EVENT_RX_L3_FIFO_UDF) LOG_DBG("GDMA_LL_EVENT_RX_L3_FIFO_UDF");
+dma_esp32_isr_handle_rx_time = uptime;
 	struct dma_esp32_data *data = (struct dma_esp32_data *const)(dev)->data;
 
 	gdma_ll_rx_clear_interrupt_status(data->hal.dev, rx->channel_id, intr_status);
+dma_descriptor_t *desc = (dma_descriptor_t *)gdma_ll_rx_get_current_desc_addr(data->hal.dev, rx->channel_id);
+if (desc >= rx->desc_list) {
+	LOG_DBG("desc_index: %"PRIu32, (uint32_t)(desc - rx->desc_list) / sizeof(dma_descriptor_t));
+} else {
+	LOG_DBG("desc_index: -");
+}
 	if (rx->cb) {
 		int status;
 
@@ -92,12 +121,38 @@ static void IRAM_ATTR dma_esp32_isr_handle_rx(const struct device *dev,
 	}
 }
 
+uint32_t dma_esp32_isr_handle_tx_counter = 0;
+uint32_t dma_esp32_isr_handle_tx_time = 0;
 static void IRAM_ATTR dma_esp32_isr_handle_tx(const struct device *dev,
 					      struct dma_esp32_channel *tx, uint32_t intr_status)
 {
+uint32_t uptime, delta;
+uptime = k_uptime_get_32();
+if (dma_base_time == 0) dma_base_time = uptime;
+delta = dma_esp32_isr_handle_tx_counter ? (uptime - dma_esp32_isr_handle_tx_time) : 0;
+LOG_DBG("%"PRIu32, ++dma_esp32_isr_handle_tx_counter);
+LOG_DBG("time: %"PRIu32"ms", uptime - dma_base_time);
+LOG_DBG("delta: %"PRIu32"ms", delta);
+LOG_DBG("status: 0x%08"PRIX32, intr_status);
+if (intr_status & GDMA_LL_EVENT_TX_DONE) LOG_DBG("GDMA_LL_EVENT_TX_DONE");
+if (intr_status & GDMA_LL_EVENT_TX_EOF) LOG_DBG("GDMA_LL_EVENT_TX_EOF");
+if (intr_status & GDMA_LL_EVENT_TX_DESC_ERROR) LOG_DBG("GDMA_LL_EVENT_TX_DESC_ERROR");
+if (intr_status & GDMA_LL_EVENT_TX_TOTAL_EOF) LOG_DBG("GDMA_LL_EVENT_TX_TOTAL_EOF");
+if (intr_status & GDMA_LL_EVENT_TX_L1_FIFO_OVF) LOG_DBG("GDMA_LL_EVENT_TX_L1_FIFO_OVF");
+if (intr_status & GDMA_LL_EVENT_TX_L1_FIFO_UDF) LOG_DBG("GDMA_LL_EVENT_TX_L1_FIFO_UDF");
+if (intr_status & GDMA_LL_EVENT_TX_L3_FIFO_OVF) LOG_DBG("GDMA_LL_EVENT_TX_L3_FIFO_OVF");
+if (intr_status & GDMA_LL_EVENT_TX_L3_FIFO_UDF) LOG_DBG("GDMA_LL_EVENT_TX_L3_FIFO_UDF");
+dma_esp32_isr_handle_tx_time = uptime;
+
 	struct dma_esp32_data *data = (struct dma_esp32_data *const)(dev)->data;
 
 	gdma_ll_tx_clear_interrupt_status(data->hal.dev, tx->channel_id, intr_status);
+dma_descriptor_t *desc = (dma_descriptor_t *)gdma_ll_rx_get_current_desc_addr(data->hal.dev, tx->channel_id);
+if (desc >= tx->desc_list) {
+	LOG_DBG("desc_index %"PRIu32, (uint32_t)(desc - tx->desc_list) / sizeof(dma_descriptor_t));
+} else {
+	LOG_DBG("desc_index: -");
+}
 	if (tx->cb) {
 		intr_status &= ~(GDMA_LL_EVENT_TX_TOTAL_EOF | GDMA_LL_EVENT_TX_DONE |
 				 GDMA_LL_EVENT_TX_EOF);
@@ -127,9 +182,11 @@ static void IRAM_ATTR dma_esp32_isr_handle(const struct device *dev, uint8_t rx_
 }
 #endif
 
+uint32_t dma_esp32_config_descriptor_counter = 0;
 static int dma_esp32_config_descriptor(struct dma_esp32_channel *dma_channel,
 					struct dma_block_config *block)
 {
+LOG_DBG("%"PRIu32, ++dma_esp32_config_descriptor_counter);
 	if (!block) {
 		LOG_ERR("At least one dma block is required");
 		return -EINVAL;
@@ -163,6 +220,7 @@ static int dma_esp32_config_descriptor(struct dma_esp32_channel *dma_channel,
 			}
 
 			block_size = block->block_size;
+LOG_DBG("block_size: %"PRIu32, block_size);
 		}
 
 		uint32_t buffer_size;
@@ -188,6 +246,7 @@ static int dma_esp32_config_descriptor(struct dma_esp32_channel *dma_channel,
 			if (block->next_block) {
 				block = block->next_block;
 			} else {
+LOG_DBG("num_desc: %i", i + 1);
 				desc_iter->next = NULL;
 				if (dma_channel->dir == DMA_TX) {
 					desc_iter->dw0.suc_eof = 1;
@@ -209,9 +268,11 @@ static int dma_esp32_config_descriptor(struct dma_esp32_channel *dma_channel,
 	return 0;
 }
 
+uint32_t dma_esp32_config_rx_counter = 0;
 static int dma_esp32_config_rx(const struct device *dev, struct dma_esp32_channel *dma_channel,
 				struct dma_config *config_dma)
 {
+LOG_DBG("%"PRIu32, ++dma_esp32_config_rx_counter);
 	struct dma_esp32_config *config = (struct dma_esp32_config *)dev->config;
 	struct dma_esp32_data *data = (struct dma_esp32_data *const)(dev)->data;
 
@@ -248,9 +309,11 @@ static int dma_esp32_config_rx(const struct device *dev, struct dma_esp32_channe
 	return dma_esp32_config_descriptor(dma_channel, config_dma->head_block);
 }
 
+uint32_t dma_esp32_config_tx_counter = 0;
 static int dma_esp32_config_tx(const struct device *dev, struct dma_esp32_channel *dma_channel,
 				struct dma_config *config_dma)
 {
+LOG_DBG("%"PRIu32, ++dma_esp32_config_tx_counter);
 	struct dma_esp32_data *data = (struct dma_esp32_data *const)(dev)->data;
 
 	dma_channel->dir = DMA_TX;
@@ -284,9 +347,11 @@ static int dma_esp32_config_tx(const struct device *dev, struct dma_esp32_channe
 	return dma_esp32_config_descriptor(dma_channel, config_dma->head_block);
 }
 
+uint32_t dma_esp32_config_counter = 0;
 static int dma_esp32_config(const struct device *dev, uint32_t channel,
 				struct dma_config *config_dma)
 {
+LOG_DBG("%"PRIu32, ++dma_esp32_config_counter);
 	struct dma_esp32_config *config = (struct dma_esp32_config *)dev->config;
 	struct dma_esp32_channel *dma_channel = &config->dma_channel[channel];
 	int ret = 0;
@@ -344,8 +409,10 @@ static int dma_esp32_config(const struct device *dev, uint32_t channel,
 	return ret;
 }
 
+uint32_t dma_esp32_start_counter = 0;
 static int dma_esp32_start(const struct device *dev, uint32_t channel)
 {
+LOG_DBG("%"PRIu32, ++dma_esp32_start_counter);
 	struct dma_esp32_config *config = (struct dma_esp32_config *)dev->config;
 	struct dma_esp32_data *data = (struct dma_esp32_data *const)(dev)->data;
 	struct dma_esp32_channel *dma_channel = &config->dma_channel[channel];
@@ -396,8 +463,10 @@ static int dma_esp32_start(const struct device *dev, uint32_t channel)
 	return 0;
 }
 
+uint32_t dma_esp32_stop_counter = 0;
 static int dma_esp32_stop(const struct device *dev, uint32_t channel)
 {
+LOG_DBG("%"PRIu32, ++dma_esp32_stop_counter);
 	struct dma_esp32_config *config = (struct dma_esp32_config *)dev->config;
 	struct dma_esp32_data *data = (struct dma_esp32_data *const)(dev)->data;
 	struct dma_esp32_channel *dma_channel = &config->dma_channel[channel];
@@ -429,9 +498,11 @@ static int dma_esp32_stop(const struct device *dev, uint32_t channel)
 	return 0;
 }
 
+uint32_t dma_esp32_get_status_counter = 0;
 static int dma_esp32_get_status(const struct device *dev, uint32_t channel,
 				struct dma_status *status)
 {
+LOG_DBG("%"PRIu32, ++dma_esp32_get_status_counter);
 	struct dma_esp32_config *config = (struct dma_esp32_config *)dev->config;
 	struct dma_esp32_data *data = (struct dma_esp32_data *const)(dev)->data;
 	struct dma_esp32_channel *dma_channel = &config->dma_channel[channel];
@@ -472,9 +543,12 @@ static int dma_esp32_get_status(const struct device *dev, uint32_t channel,
 	return 0;
 }
 
+uint32_t dma_esp32_reload_counter = 0;
 static int dma_esp32_reload(const struct device *dev, uint32_t channel, uint32_t src, uint32_t dst,
 			    size_t size)
 {
+LOG_DBG("%"PRIu32, ++dma_esp32_reload_counter);
+LOG_DBG("size: %"PRIu32, size);
 	struct dma_esp32_config *config = (struct dma_esp32_config *)dev->config;
 	struct dma_esp32_data *data = (struct dma_esp32_data *const)(dev)->data;
 	struct dma_esp32_channel *dma_channel = &config->dma_channel[channel];
@@ -501,6 +575,7 @@ static int dma_esp32_reload(const struct device *dev, uint32_t channel, uint32_t
 		desc_iter->buffer = (void *)(buf + DMA_DESCRIPTOR_BUFFER_MAX_SIZE_4B_ALIGNED * i);
 		desc_iter->dw0.owner = DMA_DESCRIPTOR_BUFFER_OWNER_DMA;
 		if (size <= DMA_DESCRIPTOR_BUFFER_MAX_SIZE_4B_ALIGNED) {
+LOG_DBG("num_desc: %i", i + 1);
 			desc_iter->dw0.size = size;
 			if (dma_channel->dir == DMA_TX) {
 				desc_iter->dw0.length = size;
@@ -527,8 +602,10 @@ static int dma_esp32_reload(const struct device *dev, uint32_t channel, uint32_t
 	return 0;
 }
 
+uint32_t dma_esp32_configure_irq_counter = 0;
 static int dma_esp32_configure_irq(const struct device *dev)
 {
+LOG_DBG("%"PRIu32, ++dma_esp32_configure_irq_counter);
 	struct dma_esp32_config *config = (struct dma_esp32_config *)dev->config;
 	struct dma_esp32_data *data = (struct dma_esp32_data *)dev->data;
 	struct irq_config *irq_cfg = (struct irq_config *)config->irq_config;
@@ -568,8 +645,10 @@ static int dma_esp32_configure_irq(const struct device *dev)
 	return 0;
 }
 
+uint32_t dma_esp32_init_counter = 0;
 static int dma_esp32_init(const struct device *dev)
 {
+LOG_DBG("%"PRIu32, ++dma_esp32_init_counter);
 	struct dma_esp32_config *config = (struct dma_esp32_config *)dev->config;
 	struct dma_esp32_data *data = (struct dma_esp32_data *)dev->data;
 	struct dma_esp32_channel *dma_channel;
