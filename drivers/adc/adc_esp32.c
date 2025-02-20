@@ -93,6 +93,42 @@ static inline int gain_to_atten(enum adc_gain gain, adc_atten_t *atten)
 	return 0;
 }
 
+#if !defined(CONFIG_ADC_ESP32_DMA)
+
+/* Convert voltage by inverted attenuation to support zephyr gain values */
+static void atten_to_gain(adc_atten_t atten, uint32_t *val_mv)
+{
+	uint32_t mult, div;
+
+	if (!val_mv) {
+		return;
+	}
+
+	switch (atten) {
+	case ADC_ATTEN_DB_2_5: /* 1/ADC_GAIN_4_5 */
+		mult = 4;
+		div = 5;
+		break;
+	case ADC_ATTEN_DB_6: /* 1/ADC_GAIN_1_2 */
+		mult = 1;
+		div = 2;
+		break;
+	case ADC_ATTEN_DB_12: /* 1/ADC_GAIN_1_4 */
+		mult = 1;
+		div = 4;
+		break;
+	case ADC_ATTEN_DB_0: /* 1/ADC_GAIN_1 */
+	default:
+		mult = 1;
+		div = 1;
+		break;
+	}
+
+	*val_mv = (*val_mv * mult) / div;
+}
+
+#endif /* !defined(CONFIG_ADC_ESP32_DMA) */
+
 static void adc_hw_calibration(adc_unit_t unit)
 {
 #if SOC_ADC_CALIBRATION_V1_SUPPORTED
@@ -391,12 +427,18 @@ static int adc_esp32_read(const struct device *dev, const struct adc_sequence *s
 		LOG_DBG("ADC acquisition [unit: %u, chan: %u, acq_raw: %u, acq_mv: %u]",
 			data->hal.unit, channel_id, acq_raw, acq_mv);
 
-		result = acq_mv;
+		if (data->meas_ref_internal > 0) {
+			/* Fit according to selected attenuation */
+			atten_to_gain(data->attenuation[channel_id], &acq_mv);
+			acq_raw = (acq_mv << data->resolution[channel_id]) / data->meas_ref_internal;
+		} else {
+			LOG_WRN("ADC values are raw (uncalibrated)");
+		}
 	} else {
 		LOG_WRN("ADC values are raw (uncalibrated)");
-		result = acq_raw;
 	}
 
+	result = acq_raw;
 	/* Store result */
 	data->buffer = (uint16_t *)seq->buffer;
 	data->buffer[0] = result;
