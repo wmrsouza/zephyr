@@ -7,3 +7,5 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(mbedtls)
 
 target_sources(app PRIVATE src/main.c)
+
+zephyr_include_directories(${APPLICATION_SOURCE_DIR}/src/configs)
