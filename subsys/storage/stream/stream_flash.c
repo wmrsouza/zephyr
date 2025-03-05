@@ -16,6 +16,8 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME, CONFIG_STREAM_FLASH_LOG_LEVEL);
 
 #include <zephyr/storage/stream_flash.h>
 
+#include <stdio.h>
+
 #ifdef CONFIG_STREAM_FLASH_PROGRESS
 #include <zephyr/settings/settings.h>
 
@@ -23,6 +25,7 @@ static int settings_direct_loader(const char *key, size_t len,
 				  settings_read_cb read_cb, void *cb_arg,
 				  void *param)
 {
+printf("%s()\n\r", __func__);
 	struct stream_flash_ctx *ctx = (struct stream_flash_ctx *) param;
 
 	/* Handle the subtree if it is an exact key match. */
@@ -82,6 +85,7 @@ static int settings_direct_loader(const char *key, size_t len,
  */
 static int stream_flash_erase_to_append(struct stream_flash_ctx *ctx, size_t size)
 {
+printf("%s()\n\r", __func__);
 	int rc = 0;
 #if defined(CONFIG_STREAM_FLASH_ERASE)
 	struct flash_pages_info page;
@@ -133,6 +137,7 @@ static int stream_flash_erase_to_append(struct stream_flash_ctx *ctx, size_t siz
 
 int stream_flash_erase_page(struct stream_flash_ctx *ctx, off_t off)
 {
+printf("%s()\n\r", __func__);
 #if defined(CONFIG_FLASH_HAS_EXPLICIT_ERASE)
 	int rc;
 	struct flash_pages_info page;
@@ -186,6 +191,7 @@ int stream_flash_erase_page(struct stream_flash_ctx *ctx, off_t off)
 
 static int flash_sync(struct stream_flash_ctx *ctx)
 {
+printf("%s()\n\r", __func__);
 	int rc = 0;
 	size_t write_addr = ctx->offset + ctx->bytes_written;
 	size_t buf_bytes_aligned;
@@ -261,6 +267,7 @@ static int flash_sync(struct stream_flash_ctx *ctx)
 int stream_flash_buffered_write(struct stream_flash_ctx *ctx, const uint8_t *data,
 				size_t len, bool flush)
 {
+printf("%s()\n\r", __func__);
 	int processed = 0;
 	int rc = 0;
 	int buf_empty_bytes;
@@ -304,6 +311,7 @@ int stream_flash_buffered_write(struct stream_flash_ctx *ctx, const uint8_t *dat
 
 size_t stream_flash_bytes_written(const struct stream_flash_ctx *ctx)
 {
+printf("%s()\n\r", __func__);
 	return ctx->bytes_written;
 }
 
@@ -316,6 +324,7 @@ struct _inspect_flash {
 static bool find_flash_total_size(const struct flash_pages_info *info,
 				  void *data)
 {
+printf("%s()\n\r", __func__);
 	struct _inspect_flash *ctx = (struct _inspect_flash *) data;
 
 	if (ctx->buf_len > info->size) {
@@ -332,6 +341,7 @@ static bool find_flash_total_size(const struct flash_pages_info *info,
 /* Internal function make sure *ctx is not NULL, no redundant check here */
 static inline int inspect_device(const struct stream_flash_ctx *ctx)
 {
+printf("%s()\n\r", __func__);
 	struct _inspect_flash inspect_flash_ctx = {
 		.buf_len = ctx->buf_len,
 		.total_size = 0
@@ -355,6 +365,7 @@ static inline int inspect_device(const struct stream_flash_ctx *ctx)
 #else
 static inline int inspect_device(const struct stream_flash_ctx *ctx)
 {
+printf("%s()\n\r", __func__);
 	ARG_UNUSED(ctx);
 	return 0;
 }
@@ -364,6 +375,7 @@ int stream_flash_init(struct stream_flash_ctx *ctx, const struct device *fdev,
 		      uint8_t *buf, size_t buf_len, size_t offset, size_t size,
 		      stream_flash_callback_t cb)
 {
+printf("%s()\n\r", __func__);
 	const struct flash_parameters *params;
 
 	if (!ctx || !fdev || !buf) {
@@ -425,6 +437,7 @@ int stream_flash_init(struct stream_flash_ctx *ctx, const struct device *fdev,
 #ifdef CONFIG_STREAM_FLASH_PROGRESS
 static int stream_flash_settings_init(void)
 {
+printf("%s()\n\r", __func__);
 	int rc = settings_subsys_init();
 
 	if (rc != 0) {
@@ -436,6 +449,7 @@ static int stream_flash_settings_init(void)
 int stream_flash_progress_load(struct stream_flash_ctx *ctx,
 			       const char *settings_key)
 {
+printf("%s()\n\r", __func__);
 	if (!ctx || !settings_key) {
 		return -EFAULT;
 	}
@@ -458,6 +472,7 @@ int stream_flash_progress_load(struct stream_flash_ctx *ctx,
 int stream_flash_progress_save(const struct stream_flash_ctx *ctx,
 			       const char *settings_key)
 {
+printf("%s()\n\r", __func__);
 	if (!ctx || !settings_key) {
 		return -EFAULT;
 	}
@@ -480,6 +495,7 @@ int stream_flash_progress_save(const struct stream_flash_ctx *ctx,
 int stream_flash_progress_clear(const struct stream_flash_ctx *ctx,
 				const char *settings_key)
 {
+printf("%s()\n\r", __func__);
 	if (!ctx || !settings_key) {
 		return -EFAULT;
 	}

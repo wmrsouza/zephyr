@@ -84,6 +84,7 @@ struct mcuboot_v1_raw_header {
 #if defined(CONFIG_MCUBOOT_BOOTLOADER_MODE_RAM_LOAD)
 uint8_t boot_fetch_active_slot(void)
 {
+printf("%s()\n\r", __func__);
 	int rc;
 	uint8_t slot;
 
@@ -102,6 +103,7 @@ uint8_t boot_fetch_active_slot(void)
 #else  /* CONFIG_MCUBOOT_BOOTLOADER_MODE_RAM_LOAD */
 uint8_t boot_fetch_active_slot(void)
 {
+printf("%s()\n\r", __func__);
 	return ACTIVE_SLOT_FLASH_AREA_ID;
 }
 #endif /* CONFIG_MCUBOOT_BOOTLOADER_MODE_RAM_LOAD */
@@ -109,6 +111,7 @@ uint8_t boot_fetch_active_slot(void)
 #if defined(CONFIG_MCUBOOT_BOOTLOADER_MODE_SWAP_USING_OFFSET)
 size_t boot_get_image_start_offset(uint8_t area_id)
 {
+printf("%s()\n\r", __func__);
 	size_t off = 0;
 	int image = IMAGE_INDEX_INVALID;
 
@@ -166,6 +169,7 @@ done:
 static int boot_read_v1_header(uint8_t area_id,
 			       struct mcuboot_v1_raw_header *v1_raw)
 {
+printf("%s()\n\r", __func__);
 	const struct flash_area *fa;
 	int rc;
 	size_t off = boot_get_image_start_offset(area_id);
@@ -216,6 +220,7 @@ int boot_read_bank_header(uint8_t area_id,
 			  struct mcuboot_img_header *header,
 			  size_t header_size)
 {
+printf("%s()\n\r", __func__);
 	int rc;
 	struct mcuboot_v1_raw_header v1_raw;
 	struct mcuboot_img_sem_ver *sem_ver;
@@ -255,11 +260,13 @@ int boot_read_bank_header(uint8_t area_id,
 
 int mcuboot_swap_type_multi(int image_index)
 {
+printf("%s()\n\r", __func__);
 	return boot_swap_type_multi(image_index);
 }
 
 int mcuboot_swap_type(void)
 {
+printf("%s()\n\r", __func__);
 #ifdef FLASH_AREA_IMAGE_SECONDARY
 	return boot_swap_type();
 #else
@@ -270,6 +277,7 @@ int mcuboot_swap_type(void)
 
 int boot_request_upgrade(int permanent)
 {
+printf("%s()\n\r", __func__);
 #ifdef FLASH_AREA_IMAGE_SECONDARY
 	int rc;
 
@@ -283,6 +291,7 @@ int boot_request_upgrade(int permanent)
 
 int boot_request_upgrade_multi(int image_index, int permanent)
 {
+printf("%s()\n\r", __func__);
 	int rc;
 
 	rc = boot_set_pending_multi(image_index, permanent);
@@ -294,6 +303,7 @@ int boot_request_upgrade_multi(int image_index, int permanent)
 
 bool boot_is_img_confirmed(void)
 {
+printf("%s()\n\r", __func__);
 	struct boot_swap_state state;
 	const struct flash_area *fa;
 	int rc;
@@ -322,6 +332,7 @@ bool boot_is_img_confirmed(void)
 
 int boot_write_img_confirmed(void)
 {
+printf("%s()\n\r", __func__);
 	const struct flash_area *fa;
 	int rc = 0;
 
@@ -338,6 +349,7 @@ int boot_write_img_confirmed(void)
 
 int boot_write_img_confirmed_multi(int image_index)
 {
+printf("%s()\n\r", __func__);
 	int rc;
 
 	rc = boot_set_confirmed_multi(image_index);
@@ -350,6 +362,7 @@ int boot_write_img_confirmed_multi(int image_index)
 
 int boot_erase_img_bank(uint8_t area_id)
 {
+printf("%s()\n\r", __func__);
 	const struct flash_area *fa;
 	int rc;
 
@@ -367,11 +380,13 @@ int boot_erase_img_bank(uint8_t area_id)
 
 ssize_t boot_get_trailer_status_offset(size_t area_size)
 {
+printf("%s()\n\r", __func__);
 	return (ssize_t)area_size - BOOT_MAGIC_SZ - BOOT_MAX_ALIGN * 2;
 }
 
 ssize_t boot_get_area_trailer_status_offset(uint8_t area_id)
 {
+printf("%s()\n\r", __func__);
 	int rc;
 	const struct flash_area *fa;
 	ssize_t offset;

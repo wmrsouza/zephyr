@@ -1,0 +1,14 @@
+config EFUSE_VIRTUAL
+	bool ""
+
+config EFUSE_VIRTUAL_KEEP_IN_FLASH
+	bool ""
+
+config SECURE_FLASH_ENCRYPTION_MODE_DEVELOPMENT
+	bool ""
+
+config IMAGE_NAME
+	string "Image name"
+	default "Default"
+
+source "Kconfig.zephyr"

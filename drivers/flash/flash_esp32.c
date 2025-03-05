@@ -87,6 +87,7 @@ static bool flash_esp32_is_aligned(off_t address, void *buffer, size_t length)
 
 static int flash_esp32_read(const struct device *dev, off_t address, void *buffer, size_t length)
 {
+printf("%s()\n\r", __func__);
 	int ret = 0;
 
 #ifdef CONFIG_MCUBOOT
@@ -161,6 +162,7 @@ static int flash_esp32_write(const struct device *dev,
 			     const void *buffer,
 			     size_t length)
 {
+printf("%s()\n\r", __func__);
 	int ret = 0;
 
 #ifdef CONFIG_MCUBOOT
@@ -176,9 +178,11 @@ static int flash_esp32_write(const struct device *dev,
 	flash_esp32_sem_take(dev);
 
 	if (esp_flash_encryption_enabled()) {
+		LOG_INF("esp_flash_encryption_enabled()");
 		ret = esp_flash_write_encrypted(NULL, address, buffer, length);
 	} else {
 		ret = esp_flash_write(NULL, buffer, address, length);
+		LOG_INF("esp_flash_write()");
 	}
 
 	flash_esp32_sem_give(dev);
@@ -189,11 +193,14 @@ static int flash_esp32_write(const struct device *dev,
 		return -EIO;
 	}
 
+	LOG_INF("ret: %i", ret);
+
 	return 0;
 }
 
 static int flash_esp32_erase(const struct device *dev, off_t start, size_t len)
 {
+printf("%s()\n\r", __func__);
 	int ret = 0;
 
 #ifdef CONFIG_MCUBOOT
@@ -220,6 +227,7 @@ void flash_esp32_page_layout(const struct device *dev,
 			     const struct flash_pages_layout **layout,
 			     size_t *layout_size)
 {
+printf("%s()\n\r", __func__);
 	*layout = &flash_esp32_pages_layout;
 	*layout_size = 1;
 }
@@ -228,6 +236,7 @@ void flash_esp32_page_layout(const struct device *dev,
 static const struct flash_parameters *
 flash_esp32_get_parameters(const struct device *dev)
 {
+printf("%s()\n\r", __func__);
 	ARG_UNUSED(dev);
 
 	return &flash_esp32_parameters;
@@ -235,6 +244,7 @@ flash_esp32_get_parameters(const struct device *dev)
 
 static int flash_esp32_init(const struct device *dev)
 {
+printf("%s()\n\r", __func__);
 #ifdef CONFIG_MULTITHREADING
 	struct flash_esp32_dev_data *const dev_data = dev->data;
 

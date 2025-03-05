@@ -8,7 +8,8 @@
 
 int main(void)
 {
-	printf("Hello World! %s\n", CONFIG_BOARD_TARGET);
+	printf("Hello World! %s\n\r", CONFIG_BOARD_TARGET);
+	printf("Image: %s\n\r", CONFIG_IMAGE_NAME);
 
 	return 0;
 }

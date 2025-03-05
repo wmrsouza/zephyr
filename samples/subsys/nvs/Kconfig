@@ -25,4 +25,13 @@ config NVS_SAMPLE_SLEEP_TIME
 	help
 	  Duration in milliseconds to sleep between reboot countdown iterations.
 
+config EFUSE_VIRTUAL
+	bool ""
+
+config EFUSE_VIRTUAL_KEEP_IN_FLASH
+	bool ""
+
+config SECURE_FLASH_ENCRYPTION_MODE_DEVELOPMENT
+	bool ""
+
 source "Kconfig.zephyr"

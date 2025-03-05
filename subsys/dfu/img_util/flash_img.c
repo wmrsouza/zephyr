@@ -58,6 +58,7 @@ BUILD_ASSERT((CONFIG_IMG_BLOCK_BUF_SIZE % FLASH_WRITE_BLOCK_SIZE == 0),
 
 static int scramble_mcuboot_trailer(struct flash_img_context *ctx)
 {
+printf("%s()\n\r", __func__);
 	int rc = 0;
 
 #ifdef CONFIG_IMG_ERASE_PROGRESSIVELY
@@ -110,6 +111,7 @@ static int scramble_mcuboot_trailer(struct flash_img_context *ctx)
 int flash_img_buffered_write(struct flash_img_context *ctx, const uint8_t *data,
 			     size_t len, bool flush)
 {
+printf("%s()\n\r", __func__);
 	int rc;
 
 	/* If there is a need to erase the trailer, that should happen before any
@@ -137,6 +139,7 @@ int flash_img_buffered_write(struct flash_img_context *ctx, const uint8_t *data,
 
 size_t flash_img_bytes_written(struct flash_img_context *ctx)
 {
+printf("%s()\n\r", __func__);
 	return stream_flash_bytes_written(&ctx->stream);
 }
 
@@ -192,6 +195,7 @@ static int flash_check_erased(const struct flash_area *fa)
 
 int flash_img_init_id(struct flash_img_context *ctx, uint8_t area_id)
 {
+printf("%s()\n\r", __func__);
 	int rc;
 	const struct device *flash_dev;
 #if defined(CONFIG_MCUBOOT_BOOTLOADER_MODE_SWAP_USING_OFFSET)
@@ -263,12 +267,14 @@ uint8_t flash_img_get_upload_slot(void)
 #else  /* CONFIG_MCUBOOT_BOOTLOADER_MODE_RAM_LOAD */
 uint8_t flash_img_get_upload_slot(void)
 {
+printf("%s()\n\r", __func__);
 	return UPLOAD_FLASH_AREA_ID;
 }
 #endif /* CONFIG_MCUBOOT_BOOTLOADER_MODE_RAM_LOAD */
 
 int flash_img_init(struct flash_img_context *ctx)
 {
+printf("%s()\n\r", __func__);
 	return flash_img_init_id(ctx, UPLOAD_FLASH_AREA_ID);
 }
 

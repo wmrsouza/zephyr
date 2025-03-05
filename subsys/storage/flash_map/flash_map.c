@@ -19,8 +19,11 @@
 #include <zephyr/drivers/flash.h>
 #include <zephyr/init.h>
 
+#include <stdio.h>
+
 void flash_area_foreach(flash_area_cb_t user_cb, void *user_data)
 {
+printf("%s()\n\r", __func__);
 	for (int i = 0; i < flash_map_entries; i++) {
 		user_cb(&flash_map[i], user_data);
 	}
@@ -28,6 +31,7 @@ void flash_area_foreach(flash_area_cb_t user_cb, void *user_data)
 
 int flash_area_open(uint8_t id, const struct flash_area **fap)
 {
+printf("%s()\n\r", __func__);
 	const struct flash_area *area;
 
 	if (flash_map == NULL) {
@@ -50,12 +54,14 @@ int flash_area_open(uint8_t id, const struct flash_area **fap)
 
 void flash_area_close(const struct flash_area *fa)
 {
+printf("%s()\n\r", __func__);
 	/* nothing to do for now */
 }
 
 int flash_area_read(const struct flash_area *fa, off_t off, void *dst,
 		    size_t len)
 {
+printf("%s()\n\r", __func__);
 	if (!is_in_flash_area_bounds(fa, off, len)) {
 		return -EINVAL;
 	}
@@ -66,6 +72,7 @@ int flash_area_read(const struct flash_area *fa, off_t off, void *dst,
 int flash_area_write(const struct flash_area *fa, off_t off, const void *src,
 		     size_t len)
 {
+printf("%s()\n\r", __func__);
 	if (!is_in_flash_area_bounds(fa, off, len)) {
 		return -EINVAL;
 	}
@@ -75,6 +82,7 @@ int flash_area_write(const struct flash_area *fa, off_t off, const void *src,
 
 int flash_area_erase(const struct flash_area *fa, off_t off, size_t len)
 {
+printf("%s()\n\r", __func__);
 	if (!is_in_flash_area_bounds(fa, off, len)) {
 		return -EINVAL;
 	}
@@ -86,6 +94,7 @@ int flash_area_copy(const struct flash_area *src_fa, off_t src_off,
 		    const struct flash_area *dst_fa, off_t dst_off,
 		    off_t len, uint8_t *buf, size_t buf_size)
 {
+printf("%s()\n\r", __func__);
 	if (!(is_in_flash_area_bounds(src_fa, src_off, len) &&
 	      is_in_flash_area_bounds(dst_fa, dst_off, len))) {
 		return -EINVAL;
@@ -98,6 +107,7 @@ int flash_area_copy(const struct flash_area *src_fa, off_t src_off,
 
 int flash_area_flatten(const struct flash_area *fa, off_t off, size_t len)
 {
+printf("%s()\n\r", __func__);
 	if (!is_in_flash_area_bounds(fa, off, len)) {
 		return -EINVAL;
 	}
@@ -107,11 +117,13 @@ int flash_area_flatten(const struct flash_area *fa, off_t off, size_t len)
 
 uint32_t flash_area_align(const struct flash_area *fa)
 {
+printf("%s()\n\r", __func__);
 	return flash_get_write_block_size(fa->fa_dev);
 }
 
 int flash_area_has_driver(const struct flash_area *fa)
 {
+printf("%s()\n\r", __func__);
 	if (!device_is_ready(fa->fa_dev)) {
 		return -ENODEV;
 	}
@@ -121,6 +133,7 @@ int flash_area_has_driver(const struct flash_area *fa)
 
 const struct device *flash_area_get_device(const struct flash_area *fa)
 {
+printf("%s()\n\r", __func__);
 	return fa->fa_dev;
 }
 
@@ -133,6 +146,7 @@ const char *flash_area_label(const struct flash_area *fa)
 
 uint8_t flash_area_erased_val(const struct flash_area *fa)
 {
+printf("%s()\n\r", __func__);
 	const struct flash_parameters *param;
 
 	param = flash_get_parameters(fa->fa_dev);

@@ -27,6 +27,8 @@
 #include <mgmt/mcumgr/util/zcbor_bulk.h>
 #include <mgmt/mcumgr/grp/img_mgmt/img_mgmt_priv.h>
 
+#include <stdio.h>
+
 #ifdef CONFIG_IMG_ENABLE_IMAGE_CHECK
 #include <zephyr/dfu/flash_img.h>
 #endif
@@ -117,6 +119,7 @@ const char *img_mgmt_err_str_data_overrun = "data overrun";
 
 void img_mgmt_take_lock(void)
 {
+printf("%s()\n\r", __func__);
 #ifdef CONFIG_MCUMGR_GRP_IMG_MUTEX
 	k_mutex_lock(&img_mgmt_mutex, K_FOREVER);
 #endif
@@ -124,6 +127,7 @@ void img_mgmt_take_lock(void)
 
 void img_mgmt_release_lock(void)
 {
+printf("%s()\n\r", __func__);
 #ifdef CONFIG_MCUMGR_GRP_IMG_MUTEX
 	k_mutex_unlock(&img_mgmt_mutex);
 #endif
@@ -132,6 +136,7 @@ void img_mgmt_release_lock(void)
 #if defined(CONFIG_MCUMGR_GRP_IMG_SLOT_INFO_HOOKS)
 static bool img_mgmt_reset_zse(struct smp_streamer *ctxt)
 {
+printf("%s()\n\r", __func__);
 	zcbor_state_t *zse = ctxt->writer->zs;
 
 	/* Because there is already data in the buffer, it must be cleared first */
@@ -148,6 +153,7 @@ static bool img_mgmt_reset_zse(struct smp_streamer *ctxt)
 #if defined(CONFIG_MCUMGR_GRP_IMG_TOO_LARGE_SYSBUILD)
 static bool img_mgmt_slot_max_size(size_t *area_sizes, zcbor_state_t *zse)
 {
+printf("%s()\n\r", __func__);
 	bool ok = true;
 
 	if (area_sizes[0] > 0 && area_sizes[1] > 0) {
@@ -166,6 +172,7 @@ static bool img_mgmt_slot_max_size(size_t *area_sizes, zcbor_state_t *zse)
 #elif defined(CONFIG_MCUMGR_GRP_IMG_TOO_LARGE_BOOTLOADER_INFO)
 static bool img_mgmt_slot_max_size(size_t *area_sizes, zcbor_state_t *zse)
 {
+printf("%s()\n\r", __func__);
 	bool ok = true;
 	int rc;
 	int max_app_size;
@@ -190,6 +197,7 @@ static bool img_mgmt_slot_max_size(size_t *area_sizes, zcbor_state_t *zse)
  */
 static int img_mgmt_find_tlvs(int slot, size_t *start_off, size_t *end_off, uint16_t magic)
 {
+printf("%s()\n\r", __func__);
 	struct image_tlv_info tlv_info;
 	int rc;
 
@@ -212,6 +220,7 @@ static int img_mgmt_find_tlvs(int slot, size_t *start_off, size_t *end_off, uint
 
 int img_mgmt_active_slot(int image)
 {
+printf("%s()\n\r", __func__);
 	int slot = 0;
 
 	/* Multi image does not support DirectXIP or RAM load currently */
@@ -244,6 +253,7 @@ int img_mgmt_active_slot(int image)
 
 int img_mgmt_active_image(void)
 {
+printf("%s()\n\r", __func__);
 	return ACTIVE_IMAGE_IS;
 }
 
@@ -252,6 +262,7 @@ int img_mgmt_active_image(void)
  */
 int img_mgmt_read_info(int image_slot, struct image_version *ver, uint8_t *hash, uint32_t *flags)
 {
+printf("%s()\n\r", __func__);
 	struct image_header hdr;
 	struct image_tlv tlv;
 	size_t data_off;
@@ -360,6 +371,7 @@ int img_mgmt_read_info(int image_slot, struct image_version *ver, uint8_t *hash,
 int
 img_mgmt_find_by_ver(struct image_version *find, uint8_t *hash)
 {
+printf("%s()\n\r", __func__);
 	int i;
 	struct image_version ver;
 
@@ -381,6 +393,7 @@ img_mgmt_find_by_ver(struct image_version *find, uint8_t *hash)
 int
 img_mgmt_find_by_hash(uint8_t *find, struct image_version *ver)
 {
+printf("%s()\n\r", __func__);
 	int i;
 	uint8_t hash[IMAGE_HASH_LEN];
 
@@ -404,6 +417,7 @@ void img_mgmt_reset_upload(void)
 static void img_mgmt_reset_upload(void)
 #endif
 {
+printf("%s()\n\r", __func__);
 	img_mgmt_take_lock();
 	memset(&g_img_mgmt_state, 0, sizeof(g_img_mgmt_state));
 	g_img_mgmt_state.area_id = -1;
@@ -416,6 +430,7 @@ static void img_mgmt_reset_upload(void)
 static int
 img_mgmt_erase(struct smp_streamer *ctxt)
 {
+printf("%s()\n\r", __func__);
 	struct image_version ver;
 	int rc;
 	zcbor_state_t *zse = ctxt->writer->zs;
@@ -487,6 +502,7 @@ end:
  */
 static int img_mgmt_slot_info(struct smp_streamer *ctxt)
 {
+printf("%s()\n\r", __func__);
 	int rc;
 	zcbor_state_t *zse = ctxt->writer->zs;
 	bool ok;
@@ -672,6 +688,7 @@ finish:
 static int
 img_mgmt_upload_good_rsp(struct smp_streamer *ctxt)
 {
+printf("%s()\n\r", __func__);
 	zcbor_state_t *zse = ctxt->writer->zs;
 	bool ok = true;
 
@@ -698,6 +715,7 @@ img_mgmt_upload_good_rsp(struct smp_streamer *ctxt)
 static int
 img_mgmt_upload_log(bool is_first, bool is_last, int status)
 {
+printf("%s()\n\r", __func__);
 	uint8_t hash[IMAGE_HASH_LEN];
 	const uint8_t *hashp;
 	int rc;
@@ -721,6 +739,7 @@ img_mgmt_upload_log(bool is_first, bool is_last, int status)
 static int
 img_mgmt_upload(struct smp_streamer *ctxt)
 {
+printf("%s()\n\r", __func__);
 	zcbor_state_t *zse = ctxt->writer->zs;
 	zcbor_state_t *zsd = ctxt->reader->zs;
 	bool ok;
@@ -1018,6 +1037,7 @@ end:
 
 int img_mgmt_my_version(struct image_version *ver)
 {
+printf("%s()\n\r", __func__);
 	return img_mgmt_read_info(img_mgmt_active_slot(img_mgmt_active_image()),
 				  ver, NULL, NULL);
 }
@@ -1032,6 +1052,7 @@ int img_mgmt_my_version(struct image_version *ver)
  */
 static int img_mgmt_translate_error_code(uint16_t err)
 {
+printf("%s()\n\r", __func__);
 	int rc;
 
 	switch (err) {
@@ -1131,6 +1152,7 @@ static struct mgmt_group img_mgmt_group = {
 
 static void img_mgmt_register_group(void)
 {
+printf("%s()\n\r", __func__);
 	mgmt_register_group(&img_mgmt_group);
 }
 

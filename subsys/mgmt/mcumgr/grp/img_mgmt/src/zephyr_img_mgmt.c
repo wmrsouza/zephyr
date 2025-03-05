@@ -60,6 +60,7 @@ BUILD_ASSERT(FIXED_PARTITION_EXISTS(SLOT4_PARTITION) &&
  */
 static int img_mgmt_flash_check_empty_inner(const struct flash_area *fa)
 {
+printf("%s()\n\r", __func__);
 	uint32_t data[16];
 	off_t addr;
 	off_t end;
@@ -107,6 +108,7 @@ static int img_mgmt_flash_check_empty_inner(const struct flash_area *fa)
  */
 static int img_mgmt_flash_check_empty(uint8_t fa_id)
 {
+printf("%s()\n\r", __func__);
 	const struct flash_area *fa;
 	int rc;
 
@@ -133,6 +135,7 @@ static int img_mgmt_flash_check_empty(uint8_t fa_id)
 int
 img_mgmt_flash_area_id(int slot)
 {
+printf("%s()\n\r", __func__);
 	uint8_t fa_id;
 
 	switch (slot) {
@@ -247,6 +250,7 @@ static int img_mgmt_get_unused_slot_area_id(unsigned int image)
 
 int img_mgmt_vercmp(const struct image_version *a, const struct image_version *b)
 {
+printf("%s()\n\r", __func__);
 	if (a->iv_major < b->iv_major) {
 		return -1;
 	} else if (a->iv_major > b->iv_major) {
@@ -278,6 +282,7 @@ int img_mgmt_vercmp(const struct image_version *a, const struct image_version *b
 
 int img_mgmt_erase_slot(int slot)
 {
+printf("%s()\n\r", __func__);
 	const struct flash_area *fa;
 	int rc;
 	int area_id = img_mgmt_flash_area_id(slot);
@@ -316,6 +321,7 @@ int img_mgmt_erase_slot(int slot)
 
 int img_mgmt_write_pending(int slot, bool permanent)
 {
+printf("%s()\n\r", __func__);
 	int rc;
 
 	if (slot != 1 && !(CONFIG_MCUMGR_GRP_IMG_UPDATABLE_IMAGE_NUMBER == 2 && slot == 3)) {
@@ -333,6 +339,7 @@ int img_mgmt_write_pending(int slot, bool permanent)
 
 int img_mgmt_write_confirmed(void)
 {
+printf("%s()\n\r", __func__);
 	int rc;
 
 	rc = boot_write_img_confirmed();
@@ -346,6 +353,7 @@ int img_mgmt_write_confirmed(void)
 
 int img_mgmt_read(int slot, unsigned int offset, void *dst, unsigned int num_bytes)
 {
+printf("%s()\n\r", __func__);
 	const struct flash_area *fa;
 	int rc;
 	int area_id = img_mgmt_flash_area_id(slot);
@@ -423,6 +431,7 @@ out:
 int img_mgmt_write_image_data(unsigned int offset, const void *data, unsigned int num_bytes,
 			      bool last)
 {
+printf("%s()\n\r", __func__);
 	static struct flash_img_context ctx;
 
 	if (offset == 0) {
@@ -441,6 +450,7 @@ int img_mgmt_write_image_data(unsigned int offset, const void *data, unsigned in
 
 int img_mgmt_erase_image_data(unsigned int off, unsigned int num_bytes)
 {
+printf("%s()\n\r", __func__);
 	const struct flash_area *fa;
 	int rc;
 	const struct device *dev;
@@ -524,6 +534,7 @@ end:
 
 int img_mgmt_swap_type(int slot)
 {
+printf("%s()\n\r", __func__);
 	int image = img_mgmt_slot_to_image(slot);
 
 	switch (mcuboot_swap_type_multi(image)) {
@@ -556,6 +567,7 @@ int img_mgmt_swap_type(int slot)
 int img_mgmt_upload_inspect(const struct img_mgmt_upload_req *req,
 			    struct img_mgmt_upload_action *action)
 {
+printf("%s()\n\r", __func__);
 	const struct image_header *hdr;
 	struct image_version cur_ver;
 	int rc;
@@ -807,6 +819,7 @@ skip_size_check:
 
 int img_mgmt_erased_val(int slot, uint8_t *erased_val)
 {
+printf("%s()\n\r", __func__);
 	const struct flash_area *fa;
 	int rc;
 	int area_id = img_mgmt_flash_area_id(slot);

@@ -66,6 +66,7 @@ LOG_MODULE_DECLARE(mcumgr_img_grp, CONFIG_MCUMGR_GRP_IMG_LOG_LEVEL);
 uint8_t
 img_mgmt_state_flags(int query_slot)
 {
+printf("%s()\n\r", __func__);
 	uint8_t flags;
 	int swap_type;
 	int image = query_slot / 2;	/* We support max 2 images for now */
@@ -148,6 +149,7 @@ img_mgmt_state_flags(int query_slot)
 	!defined(CONFIG_MCUBOOT_BOOTLOADER_MODE_FIRMWARE_UPDATER)
 int img_mgmt_get_next_boot_slot(int image, enum img_mgmt_next_boot_type *type)
 {
+printf("%s()\n\r", __func__);
 	const int active_slot = img_mgmt_active_slot(image);
 	const int state = mcuboot_swap_type_multi(image);
 	/* All cases except BOOT_SWAP_TYPE_NONE return opposite slot */
@@ -199,6 +201,7 @@ int img_mgmt_get_next_boot_slot(int image, enum img_mgmt_next_boot_type *type)
 
 static int read_directxip_state(int slot)
 {
+printf("%s()\n\r", __func__);
 	struct boot_swap_state bss;
 	int fa_id = img_mgmt_flash_area_id(slot);
 	const struct flash_area *fa;
@@ -231,6 +234,7 @@ static int read_directxip_state(int slot)
 
 int img_mgmt_get_next_boot_slot(int image, enum img_mgmt_next_boot_type *type)
 {
+printf("%s()\n\r", __func__);
 	struct image_version aver;
 	struct image_version over;
 	int active_slot = img_mgmt_active_slot(image);
@@ -314,6 +318,7 @@ out:
 int
 img_mgmt_state_any_pending(void)
 {
+printf("%s()\n\r", __func__);
 	return img_mgmt_state_flags(0) & IMG_MGMT_STATE_F_PENDING ||
 		   img_mgmt_state_flags(1) & IMG_MGMT_STATE_F_PENDING;
 }
@@ -325,6 +330,7 @@ img_mgmt_state_any_pending(void)
 int
 img_mgmt_slot_in_use(int slot)
 {
+printf("%s()\n\r", __func__);
 #if defined(CONFIG_MCUBOOT_BOOTLOADER_MODE_FIRMWARE_UPDATER)
 	return 0;
 #else
@@ -366,6 +372,7 @@ img_mgmt_slot_in_use(int slot)
 int
 img_mgmt_state_set_pending(int slot, int permanent)
 {
+printf("***%s()***\n\r", __func__);
 	uint8_t state_flags;
 	int rc;
 
@@ -393,6 +400,7 @@ done:
 int
 img_mgmt_state_confirm(void)
 {
+printf("***%s()***\n\r", __func__);
 	int rc;
 
 	/* Confirm disallowed if a test is pending. */
@@ -423,6 +431,7 @@ err:
 /* Return zcbor encoding result */
 static bool img_mgmt_state_encode_slot(struct smp_streamer *ctxt, uint32_t slot, int state_flags)
 {
+printf("%s()\n\r", __func__);
 	zcbor_state_t *zse = ctxt->writer->zs;
 	uint32_t flags;
 	char vers_str[IMG_MGMT_VER_MAX_STR_LEN];
@@ -497,6 +506,7 @@ failed:
 int
 img_mgmt_state_read(struct smp_streamer *ctxt)
 {
+printf("%s()\n\r", __func__);
 	zcbor_state_t *zse = ctxt->writer->zs;
 	uint32_t i;
 	bool ok;
@@ -554,6 +564,7 @@ img_mgmt_state_read(struct smp_streamer *ctxt)
 
 static int img_mgmt_set_next_boot_slot_common(int slot, int active_slot, bool confirm)
 {
+printf("%s()\n\r", __func__);
 	const struct flash_area *fa;
 	int area_id = img_mgmt_flash_area_id(slot);
 	int rc = 0;
@@ -678,6 +689,7 @@ int img_mgmt_set_next_boot_slot(int slot, bool confirm)
 #else
 int img_mgmt_set_next_boot_slot(int slot, bool confirm)
 {
+printf("%s()\n\r", __func__);
 	int active_image = img_mgmt_active_image();
 	int active_slot = img_mgmt_active_slot(active_image);
 
@@ -699,6 +711,7 @@ int img_mgmt_set_next_boot_slot(int slot, bool confirm)
 int
 img_mgmt_state_write(struct smp_streamer *ctxt)
 {
+printf("%s()\n\r", __func__);
 	bool confirm = false;
 	int slot;
 	int rc;

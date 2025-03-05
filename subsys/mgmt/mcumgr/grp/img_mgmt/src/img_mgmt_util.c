@@ -12,6 +12,7 @@
 int
 img_mgmt_ver_str(const struct image_version *ver, char *dst)
 {
+printf("%s()\n\r", __func__);
 	int rc = 0;
 	int rc1 = 0;
 
