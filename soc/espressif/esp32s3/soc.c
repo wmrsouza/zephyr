@@ -11,9 +11,13 @@
 #include <esp_private/cache_utils.h>
 #include <esp_private/system_internal.h>
 #include <esp_timer.h>
+#include <esp_efuse.h>
 #include <psram.h>
 #include <zephyr/drivers/interrupt_controller/intc_esp32.h>
 #include <zephyr/sys/printk.h>
+
+#define CONFIG_EFUSE_VIRTUAL_OFFSET_ 0x10000
+#define CONFIG_EFUSE_VIRTUAL_SIZE_ 0x2000
 
 extern void z_prep_c(void);
 extern void esp_reset_reason_init(void);
@@ -53,6 +57,10 @@ void IRAM_ATTR __esp_platform_app_start(void)
 	esp_timer_early_init();
 
 	esp_flash_config();
+
+#if CONFIG_EFUSE_VIRTUAL_KEEP_IN_FLASH
+        esp_efuse_init_virtual_mode_in_flash(CONFIG_EFUSE_VIRTUAL_OFFSET_, CONFIG_EFUSE_VIRTUAL_SIZE_);
+#endif
 
 #if CONFIG_ESP_SPIRAM
 	esp_init_psram();
