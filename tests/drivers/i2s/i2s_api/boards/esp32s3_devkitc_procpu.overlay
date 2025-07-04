@@ -1,0 +1,45 @@
+/* i2s-node0 is the receiver
+ * i2s-node1 is the transmitter
+ */
+/**/
+
+/* i2s-node0 is the transmitter/receiver */
+
+/ {
+	aliases {
+		i2s-node0 = &i2s0;
+		i2s-node1 = &i2s0;
+	};
+};
+
+&i2s0_default {
+	group1 {
+		pinmux = /*<I2S0_MCLK_GPIO42>,*/
+			 <I2S0_O_WS_GPIO41>,
+			 <I2S0_O_BCK_GPIO40>,
+			 <I2S0_O_SD_GPIO39>;
+		output-enable;
+	};
+
+	group2 {
+		pinmux = /*<I2S0_I_WS_GPIO41>,
+			 <I2S0_I_BCK_GPIO40>,*/
+			 <I2S0_I_SD_GPIO37>;
+		input-enable;
+	};
+};
+
+
+&i2s0 {
+	status = "okay";
+/*
+	pinctrl-0 = <&i2s0_pinconf>;
+	pinctrl-names = "default";
+*/
+	dmas = <&dma 2>, <&dma 3>;
+	dma-names = "rx", "tx";
+};
+
+&dma {
+	status = "okay";
+};
