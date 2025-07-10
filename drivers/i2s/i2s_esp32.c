@@ -235,6 +235,10 @@ static void i2s_esp32_rx_callback(void *arg, int status)
 		.size = stream->data->mem_block_len
 	};
 
+	int16_t *pi16 = item.buffer;
+	// LOG_INF("i %"PRIx32":%"PRIi32, (uint32_t)pi16, (int32_t)pi16[0]);
+	// LOG_INF("i%"PRIi32, (int32_t)pi16[0]);
+
 	err = k_msgq_put(&stream->data->queue, &item, K_NO_WAIT);
 	if (err < 0) {
 		stream->data->state = I2S_STATE_ERROR;
@@ -244,6 +248,7 @@ static void i2s_esp32_rx_callback(void *arg, int status)
 
 	if (stream->data->state == I2S_STATE_STOPPING) {
 		stream->data->state = I2S_STATE_READY;
+		LOG_ERR("#1");
 		goto rx_disable;
 	}
 
@@ -254,6 +259,11 @@ static void i2s_esp32_rx_callback(void *arg, int status)
 		goto rx_disable;
 	}
 	stream->data->mem_block_len = stream->data->i2s_cfg.block_size;
+
+	memset(stream->data->mem_block, 0, stream->data->mem_block_len);
+	pi16 = stream->data->mem_block;
+	// LOG_INF("a %"PRIx32":%"PRIi32, (uint32_t)pi16, (int32_t)pi16[0]);
+	// LOG_INF("a%"PRIi32, (int32_t)pi16[0]);
 
 	err = i2s_esp32_restart_dma(dev, I2S_DIR_RX);
 	if (err < 0) {
@@ -301,6 +311,11 @@ static int i2s_esp32_rx_start_transfer(const struct device *dev)
 		return -ENOMEM;
 	}
 	stream->data->mem_block_len = stream->data->i2s_cfg.block_size;
+
+	memset(stream->data->mem_block, 0, stream->data->mem_block_len);
+	int16_t *pi16 = stream->data->mem_block;
+	// LOG_INF("a %"PRIx32":%"PRIi32, (uint32_t)pi16, (int32_t)pi16[0]);
+	// LOG_INF("a%"PRIi32, (int32_t)pi16[0]);
 
 	err = i2s_esp32_start_dma(dev, I2S_DIR_RX);
 	if (err < 0) {
@@ -367,6 +382,13 @@ static void i2s_esp32_tx_callback(void *arg, int status)
 		goto tx_disable;
 	}
 
+	int16_t *pi16 = stream->data->mem_block;
+	// LOG_INF("j %"PRIx32":%"PRIi32, (uint32_t)pi16, (int32_t)pi16[0]);
+	// LOG_INF("j%"PRIi32, (int32_t)pi16[0]);
+
+	// memset(stream->data->mem_block, 0, stream->data->mem_block_len);
+	// LOG_INF("b%"PRIi32, (int32_t)pi16[0]);
+
 	k_mem_slab_free(stream->data->i2s_cfg.mem_slab, stream->data->mem_block);
 
 #if SOC_GDMA_SUPPORTED
@@ -382,6 +404,7 @@ static void i2s_esp32_tx_callback(void *arg, int status)
 	if (stream->data->state == I2S_STATE_STOPPING) {
 		if (k_msgq_num_used_get(&stream->data->queue) == 0 ||
 		    stream->data->stop_without_draining == true) {
+			LOG_ERR("$1");
 			stream->data->state = I2S_STATE_READY;
 			goto tx_disable;
 		}
@@ -891,10 +914,12 @@ static int i2s_esp32_configure_dir(const struct device *dev, enum i2s_dir dir,
 		return -EINVAL;
 	}
 
+	LOG_INF("%%1");
 	if (stream->data->state != I2S_STATE_NOT_READY && stream->data->state != I2S_STATE_READY) {
 		LOG_ERR("Invalid state: %d", (int)stream->data->state);
 		return -EINVAL;
 	}
+	LOG_INF("%%2");
 
 	if (i2s_cfg->frame_clk_freq == 0U) {
 		stream->conf->queue_drop(stream);
@@ -1158,12 +1183,19 @@ static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_e
 	case I2S_TRIGGER_START:
 		if (stream->data->state != I2S_STATE_READY) {
 			LOG_DBG("START - Invalid state: %d", (int)stream->data->state);
+			// if (dir == I2S_DIR_RX) {
+			// 	LOG_INF("FRX");
+			// } else if (dir == I2S_DIR_TX) {
+			// 	LOG_INF("FTX");
+			// }
 			return -EIO;
 		}
 
 		key = irq_lock();
 
 		if (dir == I2S_DIR_RX) {
+			LOG_INF("STRX");
+
 			i2s_hal_rx_stop(hal);
 			i2s_hal_rx_reset(hal);
 #if !SOC_GDMA_SUPPORTED
@@ -1171,6 +1203,8 @@ static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_e
 #endif /* !SOC_GDMA_SUPPORTED */
 			i2s_hal_rx_reset_fifo(hal);
 		} else if (dir == I2S_DIR_TX) {
+			LOG_INF("STTX");
+
 			i2s_hal_tx_stop(hal);
 			i2s_hal_tx_reset(hal);
 #if !SOC_GDMA_SUPPORTED
@@ -1197,6 +1231,7 @@ static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_e
 			return -EIO;
 		}
 
+		LOG_INF("SP");
 		if (stream->data->dma_pending) {
 			stream->data->stop_without_draining = true;
 			stream->data->state = I2S_STATE_STOPPING;
@@ -1218,11 +1253,14 @@ static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_e
 
 #if I2S_ESP32_IS_DIR_EN(tx)
 		if (dir == I2S_DIR_TX) {
+			LOG_INF("DNTX");
 			if (k_msgq_num_used_get(&stream->data->queue) > 0 ||
 			    stream->data->dma_pending) {
+				LOG_INF("T1");
 				stream->data->stop_without_draining = false;
 				stream->data->state = I2S_STATE_STOPPING;
 			} else {
+				LOG_INF("T2");
 				stream->conf->stop_transfer(dev);
 				stream->data->state = I2S_STATE_READY;
 			}
@@ -1231,10 +1269,13 @@ static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_e
 
 #if I2S_ESP32_IS_DIR_EN(rx)
 		if (dir == I2S_DIR_RX) {
+			LOG_INF("DNRX");
 			if (stream->data->dma_pending) {
+				LOG_INF("R1");
 				stream->data->stop_without_draining = true;
 				stream->data->state = I2S_STATE_STOPPING;
 			} else {
+				LOG_INF("R2");
 				stream->conf->stop_transfer(dev);
 				stream->data->state = I2S_STATE_READY;
 			}
@@ -1245,6 +1286,7 @@ static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_e
 		break;
 
 	case I2S_TRIGGER_DROP:
+		LOG_INF("DP");
 		if (stream->data->state == I2S_STATE_NOT_READY) {
 			LOG_DBG("DROP - invalid state: %d", (int)stream->data->state);
 			return -EIO;
@@ -1321,6 +1363,7 @@ static int i2s_esp32_trigger(const struct device *dev, enum i2s_dir dir, enum i2
 	return err;
 }
 
+// static uint32_t i2s_esp32_read_counter = 0;
 static int i2s_esp32_read(const struct device *dev, void **mem_block, size_t *size)
 {
 #if I2S_ESP32_IS_DIR_EN(rx)
@@ -1356,6 +1399,19 @@ static int i2s_esp32_read(const struct device *dev, void **mem_block, size_t *si
 	*mem_block = item.buffer;
 	*size = item.size;
 
+	// i2s_esp32_read_counter++;
+	int16_t *pi16 = (int16_t *)item.buffer;
+#if 0
+	LOG_INF("r%"PRIu32" - %"PRIi32/*" - %"PRIi32" - %"PRIi32*/, i2s_esp32_read_counter, (int32_t)pi16[0]/*, (int32_t)pi16[2], (int32_t)pi16[4]*/);
+	// if (i2s_esp32_read_counter == 6)
+	{
+		// LOG_HEXDUMP_INF(*mem_block, *size, "i2s_read");
+	}
+#endif
+	// LOG_INF("r %"PRIx32":%"PRIi32, (uint32_t)pi16, (int32_t)pi16[0]);
+	// LOG_INF("r%"PRIi32, (uint32_t)pi16[0]);
+	 // LOG_INF("r");
+
 	return 0;
 #else
 	*mem_block = NULL;
@@ -1366,6 +1422,7 @@ static int i2s_esp32_read(const struct device *dev, void **mem_block, size_t *si
 #endif /* I2S_ESP32_IS_DIR_EN(rx) */
 }
 
+// static uint32_t i2s_esp32_write_counter = 0;
 static int i2s_esp32_write(const struct device *dev, void *mem_block, size_t size)
 {
 #if I2S_ESP32_IS_DIR_EN(tx)
@@ -1397,6 +1454,20 @@ static int i2s_esp32_write(const struct device *dev, void *mem_block, size_t siz
 		LOG_ERR("TX queue full");
 		return err;
 	}
+
+	// i2s_esp32_write_counter++;
+	int16_t *pi16 = (int16_t *)mem_block;
+#if 0
+	LOG_INF("w%"PRIu32" - %"PRIi32/*" - %"PRIi32" - %"PRIi32*/, i2s_esp32_write_counter, (int32_t)pi16[0]/*, (int32_t)pi16[2], (int32_t)pi16[4]*/);
+	// if (i2s_esp32_write_counter == 6)
+	// {
+	// 	// LOG_HEXDUMP_INF(mem_block, size, "i2s_wite");
+	// 	// LOG_INF("%"PRIu32, (uint32_t)(*(uint16_t *)mem_block));
+	// }
+#else
+	// LOG_INF("w%"PRIu32, (int32_t)pi16[0]);
+	 // LOG_INF("w");
+#endif
 
 	return 0;
 #else

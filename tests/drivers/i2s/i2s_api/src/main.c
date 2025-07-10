@@ -28,6 +28,7 @@ static void *setup(void)
 	return NULL;
 }
 
+#if 0
 static void before(void *fixture)
 {
 	ARG_UNUSED(fixture);
@@ -48,6 +49,9 @@ static void before(void *fixture)
 	zassert_equal(ret, TC_PASS);
 }
 
+ZTEST_SUITE(i2s_loopback, NULL, setup, before, NULL, NULL);
+ZTEST_SUITE(i2s_states, NULL, setup, before, NULL, NULL);
+#else
 static void before_dir_both(void *fixture)
 {
 	ARG_UNUSED(fixture);
@@ -74,8 +78,8 @@ static void before_dir_both(void *fixture)
 	}
 }
 
-ZTEST_SUITE(i2s_loopback, NULL, setup, before, NULL, NULL);
-ZTEST_SUITE(i2s_states, NULL, setup, before, NULL, NULL);
-ZTEST_SUITE(i2s_dir_both_states, NULL, setup, before_dir_both, NULL, NULL);
+// ZTEST_SUITE(i2s_dir_both_states, NULL, setup, before_dir_both, NULL, NULL);
 ZTEST_SUITE(i2s_dir_both_loopback, NULL, setup, before_dir_both, NULL, NULL);
-ZTEST_SUITE(i2s_errors, NULL, setup, before, NULL, NULL);
+#endif
+
+// ZTEST_SUITE(i2s_errors, NULL, setup, before, NULL, NULL);

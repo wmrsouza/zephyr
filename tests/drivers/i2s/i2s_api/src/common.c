@@ -192,6 +192,9 @@ int configure_stream(const struct device *dev_i2s, enum i2s_dir dir)
 		}
 	}
 
+	i2s_cfg.options = I2S_OPT_FRAME_CLK_SLAVE
+			| I2S_OPT_BIT_CLK_SLAVE;
+
 	if (dir == I2S_DIR_RX || dir == I2S_DIR_BOTH) {
 		i2s_cfg.mem_slab = &rx_mem_slab;
 		ret = i2s_configure(dev_i2s, I2S_DIR_RX, &i2s_cfg);
