@@ -20,6 +20,12 @@ tests:
       - userspace
     filter: CONFIG_I2S_TEST_USE_GPIO_LOOPBACK
     harness: ztest
+    platform_allow:
+      - esp32_devkitc/esp32/procpu
+      - esp32c3_devkitm
+      - esp32c6_devkitc/esp32c6/hpcore
+      - esp32s2_saola
+      - esp32s3_devkitc/esp32s3/procpu
     platform_exclude:
       - frdm_mcxn947/mcxn947/cpu0
       - mcx_n9xx_evk/mcxn947/cpu0
