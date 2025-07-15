@@ -241,6 +241,7 @@ static void i2s_esp32_rx_callback(void *arg, int status)
 	err = k_msgq_put(&stream->data->queue, &item, K_NO_WAIT);
 	if (err < 0) {
 		stream->data->state = I2S_STATE_ERROR;
+		LOG_ERR("RX queue full");
 		goto rx_disable;
 	}
 
@@ -392,7 +393,7 @@ static void i2s_esp32_tx_callback(void *arg, int status)
 	err = k_msgq_get(&stream->data->queue, &item, K_NO_WAIT);
 	if (err < 0) {
 		stream->data->state = I2S_STATE_ERROR;
-		LOG_ERR("TX queue empty: %d", err);
+		LOG_DBG("TX queue empty: %d", err);
 		goto tx_disable;
 	}
 
@@ -1143,7 +1144,7 @@ static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_e
 	switch (cmd) {
 	case I2S_TRIGGER_START:
 		if (stream->data->state != I2S_STATE_READY) {
-			LOG_ERR("START - Invalid state: %d", (int)stream->data->state);
+			LOG_DBG("START - Invalid state: %d", (int)stream->data->state);
 			return -EIO;
 		}
 
@@ -1167,7 +1168,7 @@ static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_e
 
 		err = stream->conf->start_transfer(dev);
 		if (err < 0) {
-			LOG_ERR("START - Transfer start failed: %d", err);
+			LOG_DBG("START - Transfer start failed: %d", err);
 			irq_unlock(key);
 			return -EIO;
 		}
@@ -1179,7 +1180,7 @@ static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_e
 		key = irq_lock();
 		if (stream->data->state != I2S_STATE_RUNNING) {
 			irq_unlock(key);
-			LOG_ERR("STOP - Invalid state: %d", (int)stream->data->state);
+			LOG_DBG("STOP - Invalid state: %d", (int)stream->data->state);
 			return -EIO;
 		}
 
@@ -1198,7 +1199,7 @@ static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_e
 		key = irq_lock();
 		if (stream->data->state != I2S_STATE_RUNNING) {
 			irq_unlock(key);
-			LOG_ERR("DRAIN - Invalid state: %d", (int)stream->data->state);
+			LOG_DBG("DRAIN - Invalid state: %d", (int)stream->data->state);
 			return -EIO;
 		}
 
@@ -1232,7 +1233,7 @@ static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_e
 
 	case I2S_TRIGGER_DROP:
 		if (stream->data->state == I2S_STATE_NOT_READY) {
-			LOG_ERR("DROP - invalid state: %d", (int)stream->data->state);
+			LOG_DBG("DROP - invalid state: %d", (int)stream->data->state);
 			return -EIO;
 		}
 		stream->conf->stop_transfer(dev);
@@ -1242,7 +1243,7 @@ static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_e
 
 	case I2S_TRIGGER_PREPARE:
 		if (stream->data->state != I2S_STATE_ERROR) {
-			LOG_ERR("PREPARE - invalid state: %d", (int)stream->data->state);
+			LOG_DBG("PREPARE - invalid state: %d", (int)stream->data->state);
 			return -EIO;
 		}
 		stream->conf->queue_drop(stream);
