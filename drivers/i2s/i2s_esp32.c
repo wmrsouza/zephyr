@@ -907,12 +907,22 @@ static int i2s_esp32_configure_dir(const struct device *dev, enum i2s_dir dir,
 		return 0;
 	}
 
+	if (i2s_cfg->mem_slab == NULL) {
+		LOG_ERR("Memory slab is NULL");
+		return -EINVAL;
+	}
+
 	data_format = i2s_cfg->format & I2S_FMT_DATA_FORMAT_MASK;
 
 	if (data_format != I2S_FMT_DATA_FORMAT_I2S &&
 	    data_format != I2S_FMT_DATA_FORMAT_LEFT_JUSTIFIED &&
 	    data_format != I2S_FMT_DATA_FORMAT_RIGHT_JUSTIFIED) {
 		LOG_ERR("Invalid data format: %u", (unsigned int)data_format);
+		return -EINVAL;
+	}
+
+	if (data_format == I2S_FMT_DATA_FORMAT_I2S && i2s_cfg->format & I2S_FMT_DATA_ORDER_LSB) {
+		LOG_ERR("Invalid format: %u", (unsigned int)i2s_cfg->format);
 		return -EINVAL;
 	}
 
