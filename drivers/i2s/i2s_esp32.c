@@ -1320,23 +1320,22 @@ static int i2s_esp32_read(const struct device *dev, void **mem_block, size_t *si
 	if (stream->data->state == I2S_STATE_NOT_READY) {
 		LOG_ERR("RX invalid state: %d", (int)stream->data->state);
 		return -EIO;
-	} else if (stream->data->state == I2S_STATE_ERROR &&
-		   k_msgq_num_used_get(&stream->data->queue) == 0) {
-		LOG_ERR("RX queue empty");
-		return -EIO;
 	}
-
 	err = k_msgq_get(&stream->data->queue, &item,
-			 K_MSEC(stream->data->i2s_cfg.timeout));
-	if (err < 0) {
+			 (stream->data->state == I2S_STATE_ERROR)
+				 ? K_NO_WAIT : K_MSEC(stream->data->i2s_cfg.timeout));
+	if (err == 0) {
+		*mem_block = item.buffer;
+		*size = item.size;
+	} else if (err < 0) {
 		LOG_ERR("RX queue empty");
-		return err;
 	}
 
-	*mem_block = item.buffer;
-	*size = item.size;
+	if (err == -ENOMSG) {
+		err = -EIO;
+	}
 
-	return 0;
+	return err;
 #else
 	*mem_block = NULL;
 	*size = 0;
