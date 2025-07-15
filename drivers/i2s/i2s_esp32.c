@@ -50,7 +50,6 @@ struct i2s_esp32_stream_data {
 	struct i2s_config i2s_cfg;
 	void *mem_block;
 	size_t mem_block_len;
-	bool last_block;
 	bool stop_without_draining;
 	struct k_msgq queue;
 	struct intr_handle_data_t *irq_handle;
@@ -394,11 +393,6 @@ static void i2s_esp32_tx_callback(void *arg, int status)
 			stream->data->state = I2S_STATE_READY;
 			goto tx_disable;
 		}
-	}
-
-	if (stream->data->last_block) {
-		stream->data->state = I2S_STATE_READY;
-		goto tx_disable;
 	}
 
 	err = k_msgq_get(&stream->data->queue, &item, K_NO_WAIT);
@@ -1193,7 +1187,6 @@ static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_e
 			irq_unlock(key);
 			return -EIO;
 		}
-		stream->data->last_block = false;
 		stream->data->state = I2S_STATE_RUNNING;
 		irq_unlock(key);
 		break;
@@ -1211,7 +1204,6 @@ static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_e
 			stream->data->state = I2S_STATE_STOPPING;
 		} else {
 			stream->conf->stop_transfer(dev);
-			stream->data->last_block = true;
 			stream->data->state = I2S_STATE_READY;
 		}
 
@@ -1246,7 +1238,6 @@ static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_e
 				stream->data->state = I2S_STATE_STOPPING;
 			} else {
 				stream->conf->stop_transfer(dev);
-				stream->data->last_block = true;
 				stream->data->state = I2S_STATE_READY;
 			}
 		}
@@ -1431,7 +1422,6 @@ static DEVICE_API(i2s, i2s_esp32_driver_api) = {
 		.i2s_cfg = {0},                                                                    \
 		.mem_block = NULL,                                                                 \
 		.mem_block_len = 0,                                                                \
-		.last_block = false,                                                               \
 		.stop_without_draining = false,                                                    \
 		.queue = {},                                                                       \
 		.irq_handle = NULL,                                                                \
