@@ -345,6 +345,48 @@ static void i2s_esp32_rx_stop_transfer(const struct device *dev)
 
 #if I2S_ESP32_IS_DIR_EN(tx)
 
+#if !SOC_GDMA_SUPPORTED
+void i2s_esp32_tx_retry_transfer(struct k_timer *timer) {
+	const struct device *dev = (const struct device *)DEVICE_DT_GET(DT_NODELABEL(i2s0));
+	const struct i2s_esp32_cfg *const dev_cfg = dev->config;
+	const struct i2s_esp32_stream *stream = &dev_cfg->tx;
+	struct queue_item item;
+	int err;
+
+	if (stream->data->state == I2S_STATE_STOPPING) {
+		if (k_msgq_num_used_get(&stream->data->queue) == 0 ||
+		    stream->data->stop_without_draining == true) {
+			stream->data->state = I2S_STATE_READY;
+			goto tx_disable;
+		}
+	}
+
+	err = k_msgq_get(&stream->data->queue, &item, K_NO_WAIT);
+	if (err < 0) {
+		stream->data->state = I2S_STATE_ERROR;
+		LOG_ERR("TX queue empty: %d", err);
+		goto tx_disable;
+	}
+
+	stream->data->mem_block = item.buffer;
+	stream->data->mem_block_len = item.size;
+
+	err = i2s_esp32_restart_dma(dev, I2S_DIR_TX);
+	if (err < 0) {
+		stream->data->state = I2S_STATE_ERROR;
+		LOG_ERR("Failed to restart TX transfer: %d", err);
+		goto tx_disable;
+	}
+
+	return;
+
+tx_disable:
+	stream->conf->stop_transfer(dev);
+}
+
+K_TIMER_DEFINE(i2s_tx_retry_timer, i2s_esp32_tx_retry_transfer, NULL);
+#endif /* SOC_GDMA_SUPPORTED */
+
 #if SOC_GDMA_SUPPORTED
 static void i2s_esp32_tx_callback(const struct device *dma_dev, void *arg, uint32_t channel,
 				  int status)
@@ -381,6 +423,13 @@ static void i2s_esp32_tx_callback(void *arg, int status)
 		LOG_ERR("TX bad status: %d", status);
 		goto tx_disable;
 	}
+
+#if !SOC_GDMA_SUPPORTED
+	if (k_msgq_num_used_get(&stream->data->queue) == 0) {
+		k_timer_start(&i2s_tx_retry_timer, K_MSEC(1), K_NO_WAIT);
+		return;
+	}
+#endif
 
 	if (stream->data->state == I2S_STATE_STOPPING) {
 		if (k_msgq_num_used_get(&stream->data->queue) == 0 ||
