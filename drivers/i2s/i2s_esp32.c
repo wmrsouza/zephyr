@@ -42,15 +42,12 @@ struct queue_item {
 	size_t size;
 };
 
-struct i2s_esp32_stream;
-
 struct i2s_esp32_stream_data {
-	int32_t state;
-	bool is_slave;
+	bool configured;
+	bool transferring;
 	struct i2s_config i2s_cfg;
 	void *mem_block;
 	size_t mem_block_len;
-	bool stop_without_draining;
 	struct k_msgq queue;
 #if !SOC_GDMA_SUPPORTED
 	struct intr_handle_data_t *irq_handle;
@@ -61,9 +58,6 @@ struct i2s_esp32_stream_data {
 };
 
 struct i2s_esp32_stream_conf {
-	void (*queue_drop)(const struct i2s_esp32_stream *stream);
-	int (*start_transfer)(const struct device *dev);
-	void (*stop_transfer)(const struct device *dev);
 #if SOC_GDMA_SUPPORTED
 	const struct device *dma_dev;
 	uint32_t dma_channel;
@@ -92,6 +86,9 @@ struct i2s_esp32_cfg {
 };
 
 struct i2s_esp32_data {
+	int32_t state;
+	enum i2s_dir active_dir;
+	bool tx_stop_without_draining;
 	i2s_hal_clock_info_t clk_info;
 #if I2S_ESP32_IS_DIR_EN(tx)
 	struct k_timer tx_deferred_transfer_timer;
@@ -147,19 +144,100 @@ static esp_err_t i2s_esp32_calculate_clock(const struct i2s_config *i2s_cfg, uin
 	return ESP_OK;
 }
 
-static void i2s_esp32_queue_drop(const struct i2s_esp32_stream *stream)
+static void i2s_esp32_queue_drop(const struct device *dev, enum i2s_dir dir)
 {
+	const struct i2s_esp32_cfg *dev_cfg = dev->config;
+	const struct i2s_esp32_stream *stream;
 	struct queue_item item;
 
-	while (k_msgq_get(&stream->data->queue, &item, K_NO_WAIT) == 0) {
-		k_mem_slab_free(stream->data->i2s_cfg.mem_slab, item.buffer);
+#if I2S_ESP32_IS_DIR_EN(rx)
+	if (dir == I2S_DIR_RX || dir == I2S_DIR_BOTH) {
+		stream = &dev_cfg->rx;
+
+		while (k_msgq_get(&stream->data->queue, &item, K_NO_WAIT) == 0) {
+			k_mem_slab_free(stream->data->i2s_cfg.mem_slab, item.buffer);
+		}
 	}
+#endif /* I2S_ESP32_IS_DIR_EN(rx) */
+
+#if I2S_ESP32_IS_DIR_EN(tx)
+	if (dir == I2S_DIR_TX || dir == I2S_DIR_BOTH) {
+		stream = &dev_cfg->tx;
+
+		while (k_msgq_get(&stream->data->queue, &item, K_NO_WAIT) == 0) {
+			k_mem_slab_free(stream->data->i2s_cfg.mem_slab, item.buffer);
+		}
+	}
+#endif /* I2S_ESP32_IS_DIR_EN(tx) */
 }
 
 static int i2s_esp32_restart_dma(const struct device *dev, enum i2s_dir dir);
 static int i2s_esp32_start_dma(const struct device *dev, enum i2s_dir dir);
 
 #if I2S_ESP32_IS_DIR_EN(rx)
+
+static int i2s_esp32_rx_start_transfer(const struct device *dev)
+{
+	const struct i2s_esp32_cfg *dev_cfg = dev->config;
+	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
+	const i2s_hal_context_t *hal = &dev_cfg->hal;
+	int err;
+
+	err = k_mem_slab_alloc(stream->data->i2s_cfg.mem_slab, &stream->data->mem_block, K_NO_WAIT);
+	if (err < 0) {
+		return -ENOMEM;
+	}
+	stream->data->mem_block_len = stream->data->i2s_cfg.block_size;
+
+	i2s_hal_rx_stop(hal);
+	i2s_hal_rx_reset(hal);
+#if !SOC_GDMA_SUPPORTED
+	i2s_hal_rx_reset_dma(hal);
+#endif /* !SOC_GDMA_SUPPORTED */
+	i2s_hal_rx_reset_fifo(hal);
+
+	err = i2s_esp32_start_dma(dev, I2S_DIR_RX);
+	if (err < 0) {
+		LOG_DBG("Failed to start RX DMA transfer: %d", err);
+		k_mem_slab_free(stream->data->i2s_cfg.mem_slab, stream->data->mem_block);
+		stream->data->mem_block = NULL;
+		stream->data->mem_block_len = 0;
+		return -EIO;
+	}
+
+	i2s_hal_rx_start(hal);
+
+#if !SOC_GDMA_SUPPORTED
+	esp_intr_enable(stream->data->irq_handle);
+#endif /* !SOC_GDMA_SUPPORTED */
+
+	stream->data->transferring = true;
+
+	return 0;
+}
+
+static void i2s_esp32_rx_stop_transfer(const struct device *dev)
+{
+	const struct i2s_esp32_cfg *dev_cfg = dev->config;
+	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
+
+#if SOC_GDMA_SUPPORTED
+	dma_stop(stream->conf->dma_dev, stream->conf->dma_channel);
+#else
+	const i2s_hal_context_t *hal = &(dev_cfg->hal);
+
+	esp_intr_disable(stream->data->irq_handle);
+	i2s_hal_rx_stop_link(hal);
+	i2s_hal_rx_disable_intr(hal);
+	i2s_hal_rx_disable_dma(hal);
+	i2s_hal_clear_intr_status(hal, I2S_INTR_MAX);
+#endif /* SOC_GDMA_SUPPORTED */
+
+	stream->data->mem_block = NULL;
+	stream->data->mem_block_len = 0;
+
+	stream->data->transferring = false;
+}
 
 #if SOC_GDMA_SUPPORTED
 static void i2s_esp32_rx_callback(const struct device *dma_dev, void *arg, uint32_t channel,
@@ -169,6 +247,7 @@ static void i2s_esp32_rx_callback(void *arg, int status)
 #endif /* SOC_GDMA_SUPPORTED */
 {
 	const struct device *dev = (const struct device *)arg;
+	struct i2s_esp32_data *dev_data = dev->data;
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
 	int err;
@@ -181,7 +260,7 @@ static void i2s_esp32_rx_callback(void *arg, int status)
 
 	if (stream->data->mem_block == NULL) {
 		LOG_DBG("RX mem_block NULL");
-		stream->data->state = I2S_STATE_ERROR;
+		dev_data->state = I2S_STATE_ERROR;
 		goto rx_disable;
 	}
 
@@ -190,7 +269,7 @@ static void i2s_esp32_rx_callback(void *arg, int status)
 #else
 	if (status & I2S_LL_EVENT_RX_DSCR_ERR) {
 #endif /* SOC_GDMA_SUPPORTED */
-		stream->data->state = I2S_STATE_ERROR;
+		dev_data->state = I2S_STATE_ERROR;
 		LOG_DBG("RX status bad: %d", status);
 		goto rx_disable;
 	}
@@ -244,35 +323,40 @@ static void i2s_esp32_rx_callback(void *arg, int status)
 
 	err = k_msgq_put(&stream->data->queue, &item, K_NO_WAIT);
 	if (err < 0) {
-		stream->data->state = I2S_STATE_ERROR;
 		LOG_DBG("RX queue full");
+		dev_data->state = I2S_STATE_ERROR;
 		goto rx_disable;
 	}
 
-	if (stream->data->state == I2S_STATE_STOPPING) {
-		stream->data->state = I2S_STATE_READY;
+	if (dev_data->state == I2S_STATE_STOPPING) {
+		if (!dev_cfg->tx.data->transferring) {
+			dev_data->state = I2S_STATE_READY;
+		}
 		goto rx_disable;
 	}
 
 	err = k_mem_slab_alloc(stream->data->i2s_cfg.mem_slab, &stream->data->mem_block, K_NO_WAIT);
 	if (err < 0) {
 		LOG_DBG("RX failed to allocate memory from slab: %i:", err);
-		stream->data->state = I2S_STATE_ERROR;
+		dev_data->state = I2S_STATE_ERROR;
 		goto rx_disable;
 	}
 	stream->data->mem_block_len = stream->data->i2s_cfg.block_size;
 
 	err = i2s_esp32_restart_dma(dev, I2S_DIR_RX);
 	if (err < 0) {
-		stream->data->state = I2S_STATE_ERROR;
 		LOG_DBG("Failed to restart RX transfer: %d", err);
+		k_mem_slab_free(stream->data->i2s_cfg.mem_slab, stream->data->mem_block);
+		stream->data->mem_block = NULL;
+		stream->data->mem_block_len = 0;
+		dev_data->state = I2S_STATE_ERROR;
 		goto rx_disable;
 	}
 
 	return;
 
 rx_disable:
-	stream->conf->stop_transfer(dev);
+	i2s_esp32_rx_stop_transfer(dev);
 }
 
 #if !SOC_GDMA_SUPPORTED
@@ -296,174 +380,9 @@ static void IRAM_ATTR i2s_esp32_rx_handler(void *arg)
 
 #endif /* !SOC_GDMA_SUPPORTED */
 
-static int i2s_esp32_rx_start_transfer(const struct device *dev)
-{
-	const struct i2s_esp32_cfg *dev_cfg = dev->config;
-	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
-	const i2s_hal_context_t *hal = &dev_cfg->hal;
-	int err;
-
-	err = k_mem_slab_alloc(stream->data->i2s_cfg.mem_slab, &stream->data->mem_block, K_NO_WAIT);
-	if (err < 0) {
-		return -ENOMEM;
-	}
-	stream->data->mem_block_len = stream->data->i2s_cfg.block_size;
-
-	err = i2s_esp32_start_dma(dev, I2S_DIR_RX);
-	if (err < 0) {
-		LOG_DBG("Failed to start RX DMA transfer: %d", err);
-		return -EIO;
-	}
-
-	i2s_hal_rx_start(hal);
-
-#if !SOC_GDMA_SUPPORTED
-	esp_intr_enable(stream->data->irq_handle);
-#endif /* !SOC_GDMA_SUPPORTED */
-
-	return 0;
-}
-
-static void i2s_esp32_rx_stop_transfer(const struct device *dev)
-{
-	const struct i2s_esp32_cfg *dev_cfg = dev->config;
-	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
-
-#if SOC_GDMA_SUPPORTED
-	dma_stop(stream->conf->dma_dev, stream->conf->dma_channel);
-#else
-	const i2s_hal_context_t *hal = &(dev_cfg->hal);
-
-	esp_intr_disable(stream->data->irq_handle);
-	i2s_hal_rx_stop_link(hal);
-	i2s_hal_rx_disable_intr(hal);
-	i2s_hal_rx_disable_dma(hal);
-	i2s_hal_clear_intr_status(hal, I2S_INTR_MAX);
-#endif /* SOC_GDMA_SUPPORTED */
-
-	stream->data->mem_block = NULL;
-	stream->data->mem_block_len = 0;
-}
-
 #endif /* I2S_ESP32_IS_DIR_EN(rx) */
 
 #if I2S_ESP32_IS_DIR_EN(tx)
-
-void i2s_esp32_tx_compl_transfer(struct k_timer *timer)
-{
-	struct i2s_esp32_data *dev_data =
-		CONTAINER_OF(timer, struct i2s_esp32_data, tx_deferred_transfer_timer);
-	const struct device *dev = dev_data->dev;
-	const struct i2s_esp32_cfg *const dev_cfg = dev->config;
-	const struct i2s_esp32_stream *stream = &dev_cfg->tx;
-	struct queue_item item;
-	int err;
-
-	if (stream->data->state == I2S_STATE_STOPPING) {
-		if (k_msgq_num_used_get(&stream->data->queue) == 0 ||
-		    stream->data->stop_without_draining == true) {
-			stream->data->state = I2S_STATE_READY;
-			goto tx_disable;
-		}
-	}
-
-	err = k_msgq_get(&stream->data->queue, &item, K_NO_WAIT);
-	if (err < 0) {
-		stream->data->state = I2S_STATE_ERROR;
-		LOG_DBG("TX queue empty: %d", err);
-		goto tx_disable;
-	}
-
-	stream->data->mem_block = item.buffer;
-	stream->data->mem_block_len = item.size;
-
-	err = i2s_esp32_restart_dma(dev, I2S_DIR_TX);
-	if (err < 0) {
-		stream->data->state = I2S_STATE_ERROR;
-		LOG_DBG("Failed to restart TX transfer: %d", err);
-		goto tx_disable;
-	}
-
-	return;
-
-tx_disable:
-	stream->conf->stop_transfer(dev);
-}
-
-#if SOC_GDMA_SUPPORTED
-static void i2s_esp32_tx_callback(const struct device *dma_dev, void *arg, uint32_t channel,
-				  int status)
-#else
-static void i2s_esp32_tx_callback(void *arg, int status)
-#endif /* SOC_GDMA_SUPPORTED */
-{
-	const struct device *dev = (const struct device *)arg;
-	struct i2s_esp32_data *dev_data = dev->data;
-	const struct i2s_esp32_cfg *const dev_cfg = dev->config;
-	const struct i2s_esp32_stream *stream = &dev_cfg->tx;
-
-	if (!stream->data->dma_pending) {
-		return;
-	}
-
-	stream->data->dma_pending = false;
-
-	if (stream->data->mem_block == NULL) {
-		LOG_DBG("TX mem_block NULL");
-		stream->data->state = I2S_STATE_ERROR;
-		goto tx_disable;
-	}
-
-	k_mem_slab_free(stream->data->i2s_cfg.mem_slab, stream->data->mem_block);
-
-#if SOC_GDMA_SUPPORTED
-	if (status < 0) {
-#else
-	if (status & I2S_LL_EVENT_TX_DSCR_ERR) {
-#endif /* SOC_GDMA_SUPPORTED */
-		stream->data->state = I2S_STATE_ERROR;
-		LOG_DBG("TX bad status: %d", status);
-		goto tx_disable;
-	}
-
-#if CONFIG_I2S_ESP32_ALLOWED_EMPTY_TX_QUEUE_DEFERRAL_TIME_MS
-	if (k_msgq_num_used_get(&stream->data->queue) == 0) {
-		k_timer_start(&dev_data->tx_deferred_transfer_timer,
-			      K_MSEC(CONFIG_I2S_ESP32_ALLOWED_EMPTY_TX_QUEUE_DEFERRAL_TIME_MS),
-			      K_NO_WAIT);
-	} else {
-#else
-	{
-#endif
-		i2s_esp32_tx_compl_transfer(&dev_data->tx_deferred_transfer_timer);
-	}
-
-	return;
-
-tx_disable:
-	stream->conf->stop_transfer(dev);
-}
-
-#if !SOC_GDMA_SUPPORTED
-
-static void IRAM_ATTR i2s_esp32_tx_handler(void *arg)
-{
-	if (arg == NULL) {
-		return;
-	}
-
-	struct device *dev = (struct device *)arg;
-	const struct i2s_esp32_cfg *const dev_cfg = dev->config;
-	const i2s_hal_context_t *hal = &(dev_cfg->hal);
-	uint32_t status = i2s_hal_get_intr_status(hal);
-
-	i2s_hal_clear_intr_status(hal, status);
-	if (status & I2S_LL_EVENT_TX_EOF) {
-		i2s_esp32_tx_callback((void *)arg, status);
-	}
-}
-
-#endif /* !SOC_GDMA_SUPPORTED */
 
 static int i2s_esp32_tx_start_transfer(const struct device *dev)
 {
@@ -481,6 +400,13 @@ static int i2s_esp32_tx_start_transfer(const struct device *dev)
 	stream->data->mem_block = item.buffer;
 	stream->data->mem_block_len = item.size;
 
+	i2s_hal_tx_stop(hal);
+	i2s_hal_tx_reset(hal);
+#if !SOC_GDMA_SUPPORTED
+	i2s_hal_tx_reset_dma(hal);
+#endif /* !SOC_GDMA_SUPPORTED */
+	i2s_hal_tx_reset_fifo(hal);
+
 	err = i2s_esp32_start_dma(dev, I2S_DIR_TX);
 	if (err < 0) {
 		LOG_DBG("Failed to start TX DMA transfer: %d", err);
@@ -492,6 +418,8 @@ static int i2s_esp32_tx_start_transfer(const struct device *dev)
 #if !SOC_GDMA_SUPPORTED
 	esp_intr_enable(stream->data->irq_handle);
 #endif /* !SOC_GDMA_SUPPORTED */
+
+	stream->data->transferring = true;
 
 	return 0;
 }
@@ -515,9 +443,227 @@ static void i2s_esp32_tx_stop_transfer(const struct device *dev)
 
 	stream->data->mem_block = NULL;
 	stream->data->mem_block_len = 0;
+
+	stream->data->transferring = false;
 }
 
+void i2s_esp32_tx_compl_transfer(struct k_timer *timer)
+{
+	struct i2s_esp32_data *dev_data =
+		CONTAINER_OF(timer, struct i2s_esp32_data, tx_deferred_transfer_timer);
+	const struct device *dev = dev_data->dev;
+	const struct i2s_esp32_cfg *const dev_cfg = dev->config;
+	const struct i2s_esp32_stream *stream = &dev_cfg->tx;
+	struct queue_item item;
+	int err;
+
+	if (dev_data->state == I2S_STATE_ERROR) {
+		goto tx_disable;
+	}
+
+	if (dev_data->state == I2S_STATE_STOPPING) {
+		if (k_msgq_num_used_get(&stream->data->queue) == 0 ||
+		    dev_data->tx_stop_without_draining == true) {
+			if (!dev_cfg->rx.data->transferring) {
+				dev_data->state = I2S_STATE_READY;
+			}
+			goto tx_disable;
+		}
+	}
+
+	err = k_msgq_get(&stream->data->queue, &item, K_NO_WAIT);
+	if (err < 0) {
+		dev_data->state = I2S_STATE_ERROR;
+		LOG_DBG("TX queue empty: %d", err);
+		goto tx_disable;
+	}
+
+	stream->data->mem_block = item.buffer;
+	stream->data->mem_block_len = item.size;
+
+	err = i2s_esp32_restart_dma(dev, I2S_DIR_TX);
+	if (err < 0) {
+		dev_data->state = I2S_STATE_ERROR;
+		LOG_DBG("Failed to restart TX transfer: %d", err);
+		goto tx_disable;
+	}
+
+	return;
+
+tx_disable:
+	i2s_esp32_tx_stop_transfer(dev);
+}
+
+#if SOC_GDMA_SUPPORTED
+static void i2s_esp32_tx_callback(const struct device *dma_dev, void *arg, uint32_t channel,
+				  int status)
+#else
+static void i2s_esp32_tx_callback(void *arg, int status)
+#endif /* SOC_GDMA_SUPPORTED */
+{
+	const struct device *dev = (const struct device *)arg;
+	struct i2s_esp32_data *dev_data = dev->data;
+	const struct i2s_esp32_cfg *const dev_cfg = dev->config;
+	const struct i2s_esp32_stream *stream = &dev_cfg->tx;
+
+	if (dev_data->state == I2S_STATE_ERROR) {
+		goto tx_disable;
+	}
+
+	if (!stream->data->dma_pending) {
+		return;
+	}
+
+	stream->data->dma_pending = false;
+
+	if (stream->data->mem_block == NULL) {
+		LOG_DBG("TX mem_block NULL");
+		dev_data->state = I2S_STATE_ERROR;
+		goto tx_disable;
+	}
+
+	k_mem_slab_free(stream->data->i2s_cfg.mem_slab, stream->data->mem_block);
+
+#if SOC_GDMA_SUPPORTED
+	if (status < 0) {
+#else
+	if (status & I2S_LL_EVENT_TX_DSCR_ERR) {
+#endif /* SOC_GDMA_SUPPORTED */
+		dev_data->state = I2S_STATE_ERROR;
+		LOG_DBG("TX bad status: %d", status);
+		goto tx_disable;
+	}
+
+#if CONFIG_I2S_ESP32_ALLOWED_EMPTY_TX_QUEUE_DEFERRAL_TIME_MS
+	if (k_msgq_num_used_get(&stream->data->queue) == 0) {
+		k_timer_start(&dev_data->tx_deferred_transfer_timer,
+			      K_MSEC(CONFIG_I2S_ESP32_ALLOWED_EMPTY_TX_QUEUE_DEFERRAL_TIME_MS),
+			      K_NO_WAIT);
+	} else {
+#else
+	{
+#endif
+		i2s_esp32_tx_compl_transfer(&dev_data->tx_deferred_transfer_timer);
+	}
+
+	return;
+
+tx_disable:
+	i2s_esp32_tx_stop_transfer(dev);
+}
+
+#if !SOC_GDMA_SUPPORTED
+
+static void IRAM_ATTR i2s_esp32_tx_handler(void *arg)
+{
+	if (arg == NULL) {
+		return;
+	}
+
+	struct device *dev = (struct device *)arg;
+	const struct i2s_esp32_cfg *const dev_cfg = dev->config;
+	const i2s_hal_context_t *hal = &(dev_cfg->hal);
+	uint32_t status = i2s_hal_get_intr_status(hal);
+
+	i2s_hal_clear_intr_status(hal, status);
+	if (status & I2S_LL_EVENT_TX_EOF) {
+		i2s_esp32_tx_callback((void *)arg, status);
+	}
+}
+
+#endif /* !SOC_GDMA_SUPPORTED */
+
 #endif /* I2S_ESP32_IS_DIR_EN(tx) */
+
+ static int i2s_esp32_start_transfer(const struct device *dev, enum i2s_dir dir)
+{
+	int err = 0;
+
+#if I2S_ESP32_IS_DIR_EN(rx)
+	if (dir == I2S_DIR_RX || dir == I2S_DIR_BOTH) {
+		err = i2s_esp32_rx_start_transfer(dev);
+		if (err < 0) {
+			LOG_DBG("RX failed to start transfer");
+			goto start_transfer_end;
+		}
+	}
+#endif /* I2S_ESP32_IS_DIR_EN(rx) */
+
+#if I2S_ESP32_IS_DIR_EN(tx)
+	if (dir == I2S_DIR_TX || dir == I2S_DIR_BOTH) {
+		err = i2s_esp32_tx_start_transfer(dev);
+		if (err < 0) {
+			LOG_DBG("TX failed to start transfer");
+			goto start_transfer_end;
+		}
+	}
+#endif /* I2S_ESP32_IS_DIR_EN(tx) */
+
+start_transfer_end:
+#if I2S_ESP32_IS_DIR_EN(rx) && I2S_ESP32_IS_DIR_EN(tx)
+	if (dir == I2S_DIR_BOTH && err < 0) {
+		const struct i2s_esp32_cfg *dev_cfg = dev->config;
+
+		if (dev_cfg->rx.data->transferring && !dev_cfg->tx.data->transferring) {
+			i2s_esp32_rx_stop_transfer(dev);
+		}
+
+		if (!dev_cfg->rx.data->transferring && dev_cfg->tx.data->transferring) {
+			i2s_esp32_tx_stop_transfer(dev);
+		}
+	}
+#endif /* I2S_ESP32_IS_DIR_EN(rx) && I2S_ESP32_IS_DIR_EN(tx) */
+
+	return err;
+}
+
+static void i2s_esp32_stop_transfer(const struct device *dev, enum i2s_dir dir)
+{
+#if I2S_ESP32_IS_DIR_EN(rx)
+	if (dir == I2S_DIR_RX || dir == I2S_DIR_BOTH) {
+		i2s_esp32_rx_stop_transfer(dev);
+	}
+#endif /* I2S_ESP32_IS_DIR_EN(rx) */
+
+#if I2S_ESP32_IS_DIR_EN(tx)
+	if (dir == I2S_DIR_TX || dir == I2S_DIR_BOTH) {
+		i2s_esp32_tx_stop_transfer(dev);
+	}
+#endif /* I2S_ESP32_IS_DIR_EN(tx) */
+}
+
+static bool i2s_esp32_try_stop_transfer(const struct device *dev, enum i2s_dir dir, enum i2s_trigger_cmd cmd)
+{
+	const struct i2s_esp32_cfg *dev_cfg = dev->config;
+	const struct i2s_esp32_stream *stream;
+	bool at_least_one_dir_with_pending_transfer =  false;
+
+#if I2S_ESP32_IS_DIR_EN(rx)
+	if (dir == I2S_DIR_RX || dir == I2S_DIR_BOTH) {
+		stream = &dev_cfg->rx;
+		if (stream->data->dma_pending) {
+			at_least_one_dir_with_pending_transfer = true;
+		} else {
+			i2s_esp32_rx_stop_transfer(dev);
+		}
+	}
+#endif /* I2S_ESP32_IS_DIR_EN(rx) */
+
+#if I2S_ESP32_IS_DIR_EN(tx)
+	if (dir == I2S_DIR_TX || dir == I2S_DIR_BOTH) {
+		stream = &dev_cfg->tx;
+		if ((cmd == I2S_TRIGGER_DRAIN &&
+			k_msgq_num_used_get(&stream->data->queue) > 0) ||
+			stream->data->dma_pending) {
+			at_least_one_dir_with_pending_transfer = true;
+		} else {
+			i2s_esp32_tx_stop_transfer(dev);
+		}
+	}
+#endif /* I2S_ESP32_IS_DIR_EN(tx) */
+
+	return at_least_one_dir_with_pending_transfer;
+}
 
 int i2s_esp32_config_dma(const struct device *dev, enum i2s_dir dir,
 			 const struct i2s_esp32_stream *stream)
@@ -805,13 +951,19 @@ static int i2s_esp32_initialize(const struct device *dev)
 #endif /* I2S_ESP32_IS_DIR_EN(tx) */
 
 	if (!device_is_ready(clk_dev)) {
-		LOG_DBG("clock control device not ready");
+		LOG_DBG("Clock control device not ready");
 		return -ENODEV;
 	}
 
 	err = clock_control_on(clk_dev, dev_cfg->clock_subsys);
 	if (err != 0) {
 		LOG_DBG("Clock control enabling failed: %d", err);
+		return -EIO;
+	}
+
+	err = pinctrl_apply_state(dev_cfg->pcfg, PINCTRL_STATE_DEFAULT);
+	if (err < 0) {
+		LOG_DBG("Pins setup failed: %d", err);
 		return -EIO;
 	}
 
@@ -883,76 +1035,112 @@ static int i2s_esp32_initialize(const struct device *dev)
 	i2s_ll_clear_intr_status(hal->dev, I2S_INTR_MAX);
 #endif /* !SOC_GDMA_SUPPORTED */
 
-	err = pinctrl_apply_state(dev_cfg->pcfg, PINCTRL_STATE_DEFAULT);
-	if (err < 0) {
-		LOG_DBG("Pins setup failed: %d", err);
-		return -EIO;
-	}
+	dev_data->state = I2S_STATE_NOT_READY;
 
 	LOG_DBG("%s initialized", dev->name);
 
 	return 0;
 }
 
-static int i2s_esp32_configure_dir(const struct device *dev, enum i2s_dir dir,
-				   const struct i2s_esp32_stream *stream,
-				   const struct i2s_config *i2s_cfg)
+static int i2s_esp32_configure(const struct device *dev, enum i2s_dir dir,
+			       const struct i2s_config *i2s_cfg)
 {
+	struct i2s_esp32_data *dev_data = dev->data;
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
+	const struct i2s_esp32_stream *stream;
 	uint8_t data_format;
-	int err;
+	bool is_slave;
 
-	switch (dir) {
-#if I2S_ESP32_IS_DIR_EN(rx)
-	case I2S_DIR_RX:
-		if (stream->conf) {
-#if SOC_GDMA_SUPPORTED
-			if (stream->conf->dma_dev == NULL) {
-				LOG_DBG("RX DMA controller not available");
-#else
-			if (stream->conf->irq_source == -1) {
-				LOG_DBG("RX IRQ source not available");
-#endif /* SOC_GDMA_SUPPORTED */
-				return -EINVAL;
-			}
+	if (dir == I2S_DIR_BOTH) {
+		if (!dev_cfg->rx.conf || !dev_cfg->rx.data ||
+		    !dev_cfg->tx.conf || !dev_cfg->tx.data) {
+			LOG_DBG("I2S_DIR_BOTH not supported");
+			return -ENOSYS;
 		}
-		break;
-#endif /* I2S_ESP32_IS_DIR_EN(rx) */
-#if I2S_ESP32_IS_DIR_EN(tx)
-	case I2S_DIR_TX:
-		if (stream->conf) {
-#if SOC_GDMA_SUPPORTED
-			if (stream->conf->dma_dev == NULL) {
-				LOG_DBG("TX DMA controller not available");
-#else
-			if (stream->conf->irq_source == -1) {
-				LOG_DBG("TX IRQ source not available");
-#endif /* SOC_GDMA_SUPPORTED */
-				return -EINVAL;
-			}
-		}
-		break;
-#endif /* I2S_ESP32_IS_DIR_EN(tx) */
-	default:
-		LOG_DBG("Invalid direction");
+	}
+
+	if (dev_data->state != I2S_STATE_NOT_READY && dev_data->state != I2S_STATE_READY) {
+		LOG_DBG("Invalid state: %d", (int)dev_data->state);
 		return -EINVAL;
 	}
 
-	if (stream->data->state != I2S_STATE_NOT_READY && stream->data->state != I2S_STATE_READY) {
-		LOG_DBG("Invalid state: %d", (int)stream->data->state);
+	if (dir == I2S_DIR_RX || dir == I2S_DIR_BOTH) {
+#if I2S_ESP32_IS_DIR_EN(rx)
+		stream = &dev_cfg->rx;
+		if (!stream->data || !stream->conf) {
+			LOG_DBG("RX not enabled");
+			return -EINVAL;
+		}
+
+#if SOC_GDMA_SUPPORTED
+		if (stream->conf->dma_dev == NULL) {
+			LOG_DBG("RX DMA controller not available");
+#else
+		if (stream->conf->irq_source == -1) {
+			LOG_DBG("RX IRQ source not available");
+#endif /* SOC_GDMA_SUPPORTED */
+			return -EINVAL;
+		}
+#else
+		LOG_DBG("RX not enabled");
 		return -EINVAL;
+#endif /* I2S_ESP32_IS_DIR_EN(rx) */
+	}
+
+	if (dir == I2S_DIR_TX || dir == I2S_DIR_BOTH) {
+#if I2S_ESP32_IS_DIR_EN(tx)
+		stream = &dev_cfg->tx;
+		if (!stream->data || !stream->conf) {
+			LOG_DBG("TX not enabled");
+			return -EINVAL;
+		}
+
+#if SOC_GDMA_SUPPORTED
+		if (stream->conf->dma_dev == NULL) {
+			LOG_DBG("TX DMA controller not available");
+#else
+		if (stream->conf->irq_source == -1) {
+			LOG_DBG("TX IRQ source not available");
+#endif /* SOC_GDMA_SUPPORTED */
+			return -EINVAL;
+		}
+#else
+		LOG_DBG("TX not enabled");
+		return -EINVAL;
+#endif /* I2S_ESP32_IS_DIR_EN(tx) */
 	}
 
 	if (i2s_cfg->frame_clk_freq == 0U) {
-		stream->conf->queue_drop(stream);
-		memset(&stream->data->i2s_cfg, 0, sizeof(struct i2s_config));
-		stream->data->is_slave = false;
-		stream->data->state = I2S_STATE_NOT_READY;
+		i2s_esp32_queue_drop(dev, dir);
+
+#if I2S_ESP32_IS_DIR_EN(rx)
+		if (dir == I2S_DIR_RX || dir == I2S_DIR_BOTH) {
+			stream = &dev_cfg->rx;
+			memset(&stream->data->i2s_cfg, 0, sizeof(struct i2s_config));
+			stream->data->configured = false;
+		}
+#endif /* I2S_ESP32_IS_DIR_EN(rx) */
+
+#if I2S_ESP32_IS_DIR_EN(tx)
+		if (dir == I2S_DIR_TX || dir == I2S_DIR_BOTH) {
+			stream = &dev_cfg->tx;
+			memset(&stream->data->i2s_cfg, 0, sizeof(struct i2s_config));
+			stream->data->configured = false;
+		}
+#endif /* I2S_ESP32_IS_DIR_EN(tx) */
+
+		dev_data->state = I2S_STATE_NOT_READY;
+
 		return 0;
 	}
 
 	if (i2s_cfg->mem_slab == NULL) {
 		LOG_DBG("Memory slab is NULL");
+		return -EINVAL;
+	}
+
+	if (i2s_cfg->block_size == 0) {
+		LOG_DBG("Block size is 0");
 		return -EINVAL;
 	}
 
@@ -982,7 +1170,8 @@ static int i2s_esp32_configure_dir(const struct device *dev, enum i2s_dir dir,
 	}
 
 	if (i2s_cfg->options & I2S_OPT_LOOPBACK) {
-		LOG_DBG("For internal loopback: I2S#_O_SD_GPIO = I2S#_I_SD_GPIO");
+		LOG_DBG("Unsupported option: I2S_OPT_LOOPBACK");
+		LOG_DBG("To enable loopback, use the same pin SD pinctrl for TX and RX pinctrl");
 		return -EINVAL;
 	}
 
@@ -993,13 +1182,12 @@ static int i2s_esp32_configure_dir(const struct device *dev, enum i2s_dir dir,
 
 	if ((i2s_cfg->options & I2S_OPT_FRAME_CLK_SLAVE) != 0 &&
 	    (i2s_cfg->options & I2S_OPT_BIT_CLK_SLAVE) != 0) {
-		stream->data->is_slave = true;
+		is_slave = true;
 	} else if ((i2s_cfg->options & I2S_OPT_FRAME_CLK_SLAVE) == 0 &&
 		   (i2s_cfg->options & I2S_OPT_BIT_CLK_SLAVE) == 0) {
-		stream->data->is_slave = false;
+		is_slave = false;
 	} else {
-		LOG_DBG("I2S_OPT_FRAME_CLK and I2S_OPT_BIT_CLK options must both be"
-			" MASTER or SLAVE");
+		LOG_DBG("I2S_OPT_FRAME_CLK and I2S_OPT_BIT_CLK options are incompatible");
 		return -EINVAL;
 	}
 
@@ -1014,19 +1202,19 @@ static int i2s_esp32_configure_dir(const struct device *dev, enum i2s_dir dir,
 #if SOC_I2S_HW_VERSION_2
 		slot_cfg.std.left_align = true;
 #endif /* SOC_I2S_HW_VERSION_2 */
-	} else {
+	} else if (data_format == I2S_FMT_DATA_FORMAT_LEFT_JUSTIFIED) {
 		slot_cfg.std.ws_pol = i2s_cfg->format & I2S_FMT_FRAME_CLK_INV ? false : true;
 		slot_cfg.std.bit_shift = false;
-		if (data_format == I2S_FMT_DATA_FORMAT_LEFT_JUSTIFIED) {
 #if SOC_I2S_HW_VERSION_2
-			slot_cfg.std.left_align = true;
-		} else if (data_format == I2S_FMT_DATA_FORMAT_RIGHT_JUSTIFIED) {
-			slot_cfg.std.left_align = false;
+		slot_cfg.std.left_align = true;
+	} else if (data_format == I2S_FMT_DATA_FORMAT_RIGHT_JUSTIFIED) {
+		slot_cfg.std.ws_pol = i2s_cfg->format & I2S_FMT_FRAME_CLK_INV ? false : true;
+		slot_cfg.std.bit_shift = false;
+		slot_cfg.std.left_align = false;
 #endif /* SOC_I2S_HW_VERSION_2 */
-		} else {
-			LOG_DBG("Unsupported data format: %u", (unsigned int)data_format);
-			return -EINVAL;
-		}
+	} else {
+		LOG_DBG("Unsupported data format: %u", (unsigned int)data_format);
+		return -EINVAL;
 	}
 
 	slot_cfg.std.ws_width = slot_cfg.slot_bit_width;
@@ -1041,101 +1229,69 @@ static int i2s_esp32_configure_dir(const struct device *dev, enum i2s_dir dir,
 	i2s_hal_clock_info_t i2s_hal_clock_info;
 	i2s_hal_context_t *hal = (i2s_hal_context_t *)&(dev_cfg->hal);
 
-	err = i2s_esp32_calculate_clock(i2s_cfg, slot_cfg.slot_bit_width, &i2s_hal_clock_info);
+	int err = i2s_esp32_calculate_clock(i2s_cfg, slot_cfg.slot_bit_width, &i2s_hal_clock_info);
+
 	if (err != ESP_OK) {
 		return -EINVAL;
 	}
 
-	if (dev_cfg->full_duplex) {
+	if (dev_cfg->full_duplex) { //<-- considerar I2S_DIR_BOTH
 		i2s_ll_share_bck_ws(hal->dev, true);
 	} else {
 		i2s_ll_share_bck_ws(hal->dev, false);
 	}
 
-	if (dir == I2S_DIR_TX) {
-#if I2S_ESP32_IS_DIR_EN(tx)
-		i2s_hal_std_set_tx_slot(hal, stream->data->is_slave, &slot_cfg);
-		i2s_hal_set_tx_clock(hal, &i2s_hal_clock_info, I2S_ESP32_CLK_SRC);
-		i2s_ll_tx_enable_std(hal->dev);
-
-#if SOC_I2S_HW_VERSION_2
-		if (stream->data->is_slave && !dev_cfg->full_duplex) {
-			i2s_ll_mclk_bind_to_tx_clk(hal->dev);
-		}
-#endif /* SOC_I2S_HW_VERSION_2 */
-#endif /* I2S_ESP32_IS_DIR_EN(tx) */
-	} else if (dir == I2S_DIR_RX) {
 #if I2S_ESP32_IS_DIR_EN(rx)
-		if (dev_cfg->full_duplex) {
-			stream->data->is_slave = true;
+	if (dir == I2S_DIR_RX || dir == I2S_DIR_BOTH) {
+		if (dev_cfg->full_duplex) { //<-- considerar I2S_DIR_BOTH
+			is_slave = true;
 		}
 
-		i2s_hal_std_set_rx_slot(hal, stream->data->is_slave, &slot_cfg);
+		i2s_hal_std_set_rx_slot(hal, is_slave, &slot_cfg);
 		i2s_hal_set_rx_clock(hal, &i2s_hal_clock_info, I2S_ESP32_CLK_SRC);
 		i2s_ll_rx_enable_std(hal->dev);
 
 #if SOC_I2S_HW_VERSION_2
-		if (!stream->data->is_slave && !dev_cfg->full_duplex) {
+		if (!is_slave && !dev_cfg->full_duplex) { //<-- (?) considerar I2S_DIR_BOTH
 			i2s_ll_mclk_bind_to_rx_clk(hal->dev);
 		}
 #endif /* SOC_I2S_HW_VERSION_2 */
-#endif /* I2S_ESP32_IS_DIR_EN(rx) */
+
+		stream = &dev_cfg->rx;
+		memcpy(&stream->data->i2s_cfg, i2s_cfg, sizeof(struct i2s_config));
+		stream->data->configured = true;
+		if (!dev_cfg->full_duplex) { // <-- investigar consequencias
+			dev_cfg->tx.data->configured = false;
+			// (?) necessario desabilitar alguma coisa
+		}
 	}
+#endif /* I2S_ESP32_IS_DIR_EN(rx) */
 
+#if I2S_ESP32_IS_DIR_EN(tx)
+	if (dir == I2S_DIR_TX || dir == I2S_DIR_BOTH) {
+		i2s_hal_std_set_tx_slot(hal, is_slave, &slot_cfg);
+		i2s_hal_set_tx_clock(hal, &i2s_hal_clock_info, I2S_ESP32_CLK_SRC);
+		i2s_ll_tx_enable_std(hal->dev);
 
-	memcpy(&stream->data->i2s_cfg, i2s_cfg, sizeof(struct i2s_config));
+#if SOC_I2S_HW_VERSION_2
+		if (is_slave && !dev_cfg->full_duplex) { //<-- (?) considerar I2S_DIR_BOTH
+			i2s_ll_mclk_bind_to_tx_clk(hal->dev);
+		}
+#endif /* SOC_I2S_HW_VERSION_2 */
 
-	stream->data->state = I2S_STATE_READY;
+		stream = &dev_cfg->tx;
+		memcpy(&stream->data->i2s_cfg, i2s_cfg, sizeof(struct i2s_config));
+		stream->data->configured = true;
+		if (!dev_cfg->full_duplex) { // <-- investigar consequencias
+			dev_cfg->rx.data->configured = false;
+			// (?) necessario desabilitar alguma coisa
+		}
+	}
+#endif /* I2S_ESP32_IS_DIR_EN(tx) */
+
+	dev_data->state = I2S_STATE_READY;
 
 	return 0;
-}
-
-static int i2s_esp32_configure(const struct device *dev, enum i2s_dir dir,
-			       const struct i2s_config *i2s_cfg)
-{
-	const struct i2s_esp32_cfg *dev_cfg = dev->config;
-	const struct i2s_esp32_stream *stream;
-	int err;
-
-	switch (dir) {
-	case I2S_DIR_RX:
-#if I2S_ESP32_IS_DIR_EN(rx)
-		stream = &dev_cfg->rx;
-		if (stream) {
-			err = i2s_esp32_configure_dir(dev, I2S_DIR_RX, stream, i2s_cfg);
-		} else {
-			LOG_DBG("I2S_DIR_RX not enabled");
-			err = -EINVAL;
-		}
-#else
-		LOG_DBG("I2S_DIR_RX not enabled");
-		err = -EINVAL;
-#endif /* I2S_ESP32_IS_DIR_EN(rx) */
-		break;
-	case I2S_DIR_TX:
-#if I2S_ESP32_IS_DIR_EN(tx)
-		stream = &dev_cfg->tx;
-		if (stream) {
-			err = i2s_esp32_configure_dir(dev, I2S_DIR_TX, stream, i2s_cfg);
-		} else {
-			LOG_DBG("I2S_DIR_TX not enabled");
-			err = -EINVAL;
-		}
-#else
-		LOG_DBG("I2S_DIR_TX not enabled");
-		err = -EINVAL;
-#endif /* I2S_ESP32_IS_DIR_EN(tx) */
-		break;
-	case I2S_DIR_BOTH:
-		LOG_DBG("I2S_DIR_BOTH not supported");
-		err = -ENOSYS;
-		break;
-	default:
-		LOG_DBG("Invalid direction: %d", (int)dir);
-		err = -EINVAL;
-	}
-
-	return err;
 }
 
 static const struct i2s_config *i2s_esp32_config_get(const struct device *dev, enum i2s_dir dir)
@@ -1146,23 +1302,23 @@ static const struct i2s_config *i2s_esp32_config_get(const struct device *dev, e
 	if (dir == I2S_DIR_RX) {
 #if I2S_ESP32_IS_DIR_EN(rx)
 		stream = &dev_cfg->rx;
-		if (!stream) {
-			LOG_DBG("I2S_DIR_RX not enabled");
+		if (!stream->data) {
+			LOG_DBG("RX not enabled");
 			return NULL;
 		}
 #else
-		LOG_DBG("I2S_DIR_RX not enabled");
+		LOG_DBG("RX not enabled");
 		return NULL;
 #endif /* I2S_ESP32_IS_DIR_EN(rx) */
 	} else if (dir == I2S_DIR_TX) {
 #if I2S_ESP32_IS_DIR_EN(tx)
 		stream = &dev_cfg->tx;
-		if (!stream) {
-			LOG_DBG("I2S_DIR_TX not enabled");
+		if (!stream->data) {
+			LOG_DBG("TX not enabled");
 			return NULL;
 		}
 #else
-		LOG_DBG("I2S_DIR_TX not enabled");
+		LOG_DBG("TX not enabled");
 		return NULL;
 #endif /* I2S_ESP32_IS_DIR_EN(tx) */
 	} else {
@@ -1170,181 +1326,143 @@ static const struct i2s_config *i2s_esp32_config_get(const struct device *dev, e
 		return NULL;
 	}
 
-	if (stream->data->state == I2S_STATE_NOT_READY) {
+	if (!stream->data->configured) {
 		return NULL;
 	}
 
 	return &stream->data->i2s_cfg;
 }
 
-static int i2s_esp32_trigger_stream(const struct device *dev, const struct i2s_esp32_stream *stream,
-				    enum i2s_dir dir, enum i2s_trigger_cmd cmd)
+static int i2s_esp32_trigger(const struct device *dev, enum i2s_dir dir, enum i2s_trigger_cmd cmd)
 {
+	struct i2s_esp32_data *dev_data = dev->data;
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
-	const i2s_hal_context_t *hal = &dev_cfg->hal;
+	bool configured, cmd_allowed, at_least_one_dir_with_pending_transfer;
 	unsigned int key;
 	int err;
 
-	switch (cmd) {
-	case I2S_TRIGGER_START:
-		if (stream->data->state != I2S_STATE_READY) {
-			LOG_DBG("START - Invalid state: %d", (int)stream->data->state);
-			return -EIO;
-		}
-
-		key = irq_lock();
-
-		if (dir == I2S_DIR_RX) {
-			i2s_hal_rx_stop(hal);
-			i2s_hal_rx_reset(hal);
-#if !SOC_GDMA_SUPPORTED
-			i2s_hal_rx_reset_dma(hal);
-#endif /* !SOC_GDMA_SUPPORTED */
-			i2s_hal_rx_reset_fifo(hal);
-		} else if (dir == I2S_DIR_TX) {
-			i2s_hal_tx_stop(hal);
-			i2s_hal_tx_reset(hal);
-#if !SOC_GDMA_SUPPORTED
-			i2s_hal_tx_reset_dma(hal);
-#endif /* !SOC_GDMA_SUPPORTED */
-			i2s_hal_tx_reset_fifo(hal);
-		}
-
-		err = stream->conf->start_transfer(dev);
-		if (err < 0) {
-			irq_unlock(key);
-			LOG_DBG("START - Transfer start failed: %d", err);
-			return -EIO;
-		}
-		stream->data->state = I2S_STATE_RUNNING;
-		irq_unlock(key);
-		break;
-
-	case I2S_TRIGGER_STOP:
-		key = irq_lock();
-		if (stream->data->state != I2S_STATE_RUNNING) {
-			irq_unlock(key);
-			LOG_DBG("STOP - Invalid state: %d", (int)stream->data->state);
-			return -EIO;
-		}
-
-		if (stream->data->dma_pending) {
-			stream->data->stop_without_draining = true;
-			stream->data->state = I2S_STATE_STOPPING;
+	if (dir == I2S_DIR_BOTH) {
+		if (dev_cfg->rx.conf && dev_cfg->rx.data &&
+		    dev_cfg->tx.conf && dev_cfg->tx.data) {
+			configured = dev_cfg->rx.data->configured && dev_cfg->tx.data->configured;
 		} else {
-			stream->conf->stop_transfer(dev);
-			stream->data->state = I2S_STATE_READY;
+			LOG_DBG("I2S_DIR_BOTH not supported");
+			return -ENOSYS;
 		}
-
-		irq_unlock(key);
-		break;
-
-	case I2S_TRIGGER_DRAIN:
-		key = irq_lock();
-		if (stream->data->state != I2S_STATE_RUNNING) {
-			irq_unlock(key);
-			LOG_DBG("DRAIN - Invalid state: %d", (int)stream->data->state);
-			return -EIO;
-		}
-
-#if I2S_ESP32_IS_DIR_EN(tx)
-		if (dir == I2S_DIR_TX) {
-			if (k_msgq_num_used_get(&stream->data->queue) > 0 ||
-			    stream->data->dma_pending) {
-				stream->data->stop_without_draining = false;
-				stream->data->state = I2S_STATE_STOPPING;
-			} else {
-				stream->conf->stop_transfer(dev);
-				stream->data->state = I2S_STATE_READY;
-			}
-		}
-#endif /* I2S_ESP32_IS_DIR_EN(tx) */
-
-#if I2S_ESP32_IS_DIR_EN(rx)
-		if (dir == I2S_DIR_RX) {
-			if (stream->data->dma_pending) {
-				stream->data->stop_without_draining = true;
-				stream->data->state = I2S_STATE_STOPPING;
-			} else {
-				stream->conf->stop_transfer(dev);
-				stream->data->state = I2S_STATE_READY;
-			}
-		}
-#endif /* I2S_ESP32_IS_DIR_EN(rx) */
-
-		irq_unlock(key);
-		break;
-
-	case I2S_TRIGGER_DROP:
-		if (stream->data->state == I2S_STATE_NOT_READY) {
-			LOG_DBG("DROP - invalid state: %d", (int)stream->data->state);
-			return -EIO;
-		}
-		stream->conf->stop_transfer(dev);
-		stream->conf->queue_drop(stream);
-		stream->data->state = I2S_STATE_READY;
-		break;
-
-	case I2S_TRIGGER_PREPARE:
-		if (stream->data->state != I2S_STATE_ERROR) {
-			LOG_DBG("PREPARE - invalid state: %d", (int)stream->data->state);
-			return -EIO;
-		}
-		stream->conf->queue_drop(stream);
-		stream->data->state = I2S_STATE_READY;
-		break;
-
-	default:
-		LOG_DBG("Unsupported trigger command: %d", (int)cmd);
+	} else if (dir == I2S_DIR_RX) {
+		configured = dev_cfg->rx.data->configured;
+	} else if (dir == I2S_DIR_TX) {
+		configured = dev_cfg->tx.data->configured;
+	} else {
+		LOG_DBG("Invalid dir: %d", dir);
 		return -EINVAL;
 	}
 
-	return 0;
-}
+	if (!configured) {
+		LOG_DBG("Device is not configured");
+		return -EIO;
+	}
 
-static int i2s_esp32_trigger(const struct device *dev, enum i2s_dir dir, enum i2s_trigger_cmd cmd)
-{
-	const struct i2s_esp32_cfg *dev_cfg = dev->config;
-	const struct i2s_esp32_stream *stream;
-	int err;
-
-	switch (dir) {
-	case I2S_DIR_RX:
-#if I2S_ESP32_IS_DIR_EN(rx)
-		stream = &dev_cfg->rx;
-		if (stream) {
-			err = i2s_esp32_trigger_stream(dev, stream, I2S_DIR_RX, cmd);
-		} else {
-			LOG_DBG("I2S_DIR_RX not enabled");
-			err = -EINVAL;
-		}
-#else
-		LOG_DBG("I2S_DIR_RX not enabled");
-		err = -EINVAL;
-#endif /* I2S_ESP32_IS_DIR_EN(rx) */
+	switch (cmd) {
+	case I2S_TRIGGER_START:
+		cmd_allowed = (dev_data->state == I2S_STATE_READY);
 		break;
-	case I2S_DIR_TX:
-#if I2S_ESP32_IS_DIR_EN(tx)
-		stream = &dev_cfg->tx;
-		if (stream) {
-			err = i2s_esp32_trigger_stream(dev, stream, I2S_DIR_TX, cmd);
-		} else {
-			LOG_DBG("I2S_DIR_TX not enabled");
-			err = -EINVAL;
-		}
-#else
-		LOG_DBG("I2S_DIR_TX not enabled");
-		err = -EINVAL;
-#endif /* I2S_ESP32_IS_DIR_EN(tx) */
+	case I2S_TRIGGER_STOP:
+		__fallthrough;
+	case I2S_TRIGGER_DRAIN:
+		cmd_allowed = (dev_data->state == I2S_STATE_RUNNING);
 		break;
-	case I2S_DIR_BOTH:
-		LOG_DBG("I2S_DIR_BOTH not supported");
-		err = -ENOSYS;
+	case I2S_TRIGGER_DROP:
+		cmd_allowed = configured;
+		break;
+	case I2S_TRIGGER_PREPARE:
+		cmd_allowed = (dev_data->state == I2S_STATE_ERROR);
 		break;
 	default:
-		LOG_DBG("Invalid direction: %d", (int)dir);
-		err = -EINVAL;
+		LOG_ERR("Invalid trigger: %d", cmd);
+		return -EINVAL;
 	}
+
+	if (!cmd_allowed) {
+		switch (cmd) {
+		case I2S_TRIGGER_START:
+			LOG_DBG("START - Invalid state: %d", (int)dev_data->state);
+			break;
+		case I2S_TRIGGER_STOP:
+			LOG_DBG("STOP - Invalid state: %d", (int)dev_data->state);
+			break;
+		case I2S_TRIGGER_DRAIN:
+			LOG_DBG("DRAIN - Invalid state: %d", (int)dev_data->state);
+			break;
+		case I2S_TRIGGER_DROP:
+			LOG_DBG("DROP - invalid state: %d", (int)dev_data->state);
+			break;
+		case I2S_TRIGGER_PREPARE:
+			LOG_DBG("PREPARE - invalid state: %d", (int)dev_data->state);
+		}
+
+		return -EIO;
+	}
+
+	if (dev_data->state == I2S_STATE_RUNNING && dev_data->active_dir != dir) {
+		LOG_DBG("Trigger dir (%d) different from active dir (%d)", dir,
+			dev_data->active_dir);
+		return -EINVAL;
+	}
+
+
+	err = 0;
+	key = irq_lock();
+	switch (cmd) {
+	case I2S_TRIGGER_START:
+		dev_data->active_dir = dir;
+		dev_data->tx_stop_without_draining = true;
+		err = i2s_esp32_start_transfer(dev, dir);
+		if (err < 0) {
+			LOG_DBG("START - Transfer start failed: %d", err);
+			err = -EIO;
+			break;
+		}
+		dev_data->state = I2S_STATE_RUNNING;
+		break;
+	case I2S_TRIGGER_STOP:
+		__fallthrough;
+	case I2S_TRIGGER_DRAIN:
+		at_least_one_dir_with_pending_transfer = i2s_esp32_try_stop_transfer(dev, dir, cmd);
+		if (at_least_one_dir_with_pending_transfer) {
+			dev_data->state = I2S_STATE_STOPPING;
+		} else {
+			dev_data->state = I2S_STATE_READY;
+		}
+
+#if I2S_ESP32_IS_DIR_EN(tx)
+		if ((dir == I2S_DIR_TX || dir == I2S_DIR_BOTH) &&
+		    dev_data->state == I2S_STATE_STOPPING) {
+			switch (cmd) {
+			case I2S_TRIGGER_STOP:
+				dev_data->tx_stop_without_draining = true;
+				break;
+			case I2S_TRIGGER_DRAIN:
+				dev_data->tx_stop_without_draining = false;
+			default:
+			}
+		}
+#endif /* I2S_ESP32_IS_DIR_EN(tx) */
+		break;
+	case I2S_TRIGGER_DROP:
+		i2s_esp32_stop_transfer(dev, dir);
+		i2s_esp32_queue_drop(dev, dir);
+		dev_data->state = I2S_STATE_READY;
+		break;
+	case I2S_TRIGGER_PREPARE:
+		i2s_esp32_queue_drop(dev, dir);
+		dev_data->state = I2S_STATE_READY;
+		break;
+	default:
+		LOG_DBG("Unsupported trigger command: %d", (int)cmd);
+		err = -EIO;
+	}
+	irq_unlock(key);
 
 	return err;
 }
@@ -1352,22 +1470,25 @@ static int i2s_esp32_trigger(const struct device *dev, enum i2s_dir dir, enum i2
 static int i2s_esp32_read(const struct device *dev, void **mem_block, size_t *size)
 {
 #if I2S_ESP32_IS_DIR_EN(rx)
+	struct i2s_esp32_data *dev_data = dev->data;
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream = &dev_cfg->rx;
-	enum i2s_state state = stream->data->state;
+	enum i2s_state state = dev_data->state;
 	struct queue_item item;
 	int err;
 
-	if (!stream) {
-		*mem_block = NULL;
-		*size = 0;
+	if (!stream->data || !stream->conf) {
+		LOG_DBG("RX not enabled");
+		return -EIO;
+	}
 
-		LOG_DBG("I2S_DIR_RX not enabled");
-		return -EINVAL;
+	if (!stream->data->configured) {
+		LOG_DBG("RX not configured");
+		return -EIO;
 	}
 
 	if (state == I2S_STATE_NOT_READY) {
-		LOG_DBG("RX invalid state: %d", (int)stream->data->state);
+		LOG_DBG("Invalid state: %d", (int)state);
 		return -EIO;
 	}
 
@@ -1387,34 +1508,37 @@ static int i2s_esp32_read(const struct device *dev, void **mem_block, size_t *si
 
 	return err;
 #else
-	*mem_block = NULL;
-	*size = 0;
-
-	LOG_DBG("I2S_DIR_RX not enabled");
-	return -EINVAL;
+	LOG_DBG("RX not enabled");
+	return -EIO;
 #endif /* I2S_ESP32_IS_DIR_EN(rx) */
 }
 
 static int i2s_esp32_write(const struct device *dev, void *mem_block, size_t size)
 {
 #if I2S_ESP32_IS_DIR_EN(tx)
+	struct i2s_esp32_data *dev_data = dev->data;
 	const struct i2s_esp32_cfg *dev_cfg = dev->config;
 	const struct i2s_esp32_stream *stream = &dev_cfg->tx;
-	enum i2s_state state = stream->data->state;
+	enum i2s_state state = dev_data->state;
 	int err;
 
-	if (!stream) {
-		LOG_DBG("I2S_DIR_TX not enabled");
-		return -EINVAL;
+	if (!stream->data || !stream->conf) {
+		LOG_DBG("TX not enabled");
+		return -EIO;
+	}
+
+	if (!stream->data->configured) {
+		LOG_DBG("TX not configured");
+		return -EIO;
+	}
+
+	if (state != I2S_STATE_RUNNING && state != I2S_STATE_READY) {
+		LOG_DBG("Invalid state: %d", (int)state);
+		return -EIO;
 	}
 
 	if (size > stream->data->i2s_cfg.block_size) {
 		LOG_DBG("Max write size is: %u", stream->data->i2s_cfg.block_size);
-		return -EINVAL;
-	}
-
-	if (state != I2S_STATE_RUNNING && state != I2S_STATE_READY) {
-		LOG_DBG("TX Invalid state: %d", (int)state);
 		return -EIO;
 	}
 
@@ -1428,8 +1552,8 @@ static int i2s_esp32_write(const struct device *dev, void *mem_block, size_t siz
 
 	return err;
 #else
-	LOG_DBG("I2S_DIR_TX not enabled");
-	return -EINVAL;
+	LOG_DBG("TX not enabled");
+	return -EIO;
 #endif /* I2S_ESP32_IS_DIR_EN(tx) */
 }
 
@@ -1484,20 +1608,16 @@ static DEVICE_API(i2s, i2s_esp32_driver_api) = {
 
 #define I2S_ESP32_STREAM_DECLARE(index, dir)                                                       \
 	struct i2s_esp32_stream_data i2s_esp32_stream_##index##_##dir##_data = {                   \
-		.state = I2S_STATE_NOT_READY,                                                      \
-		.is_slave = false,                                                                 \
+		.configured = false,                                                               \
+		.transferring = false,                                                             \
 		.i2s_cfg = {0},                                                                    \
 		.mem_block = NULL,                                                                 \
 		.mem_block_len = 0,                                                                \
-		.stop_without_draining = false,                                                    \
 		.queue = {},                                                                       \
 		.dma_pending = false,                                                              \
 		I2S_ESP32_STREAM_DECLARE_DATA(index, dir)};                                        \
                                                                                                    \
 	const struct i2s_esp32_stream_conf i2s_esp32_stream_##index##_##dir##_conf = {             \
-		.queue_drop = i2s_esp32_queue_drop,                                                \
-		.start_transfer = i2s_esp32_##dir##_start_transfer,                                \
-		.stop_transfer = i2s_esp32_##dir##_stop_transfer,                                  \
 		I2S_ESP32_STREAM_DECLARE_CONF(index, dir)};
 
 #define I2S_ESP32_STREAM_COND_DECLARE(index, dir)                                                  \
@@ -1520,7 +1640,10 @@ static DEVICE_API(i2s, i2s_esp32_driver_api) = {
 	I2S_ESP32_STREAM_COND_DECLARE(index, rx);                                                  \
 	I2S_ESP32_STREAM_COND_DECLARE(index, tx);                                                  \
                                                                                                    \
-	static struct i2s_esp32_data i2s_esp32_data_##index = {.clk_info = {0}};                   \
+	static struct i2s_esp32_data i2s_esp32_data_##index = {                                    \
+		.state = I2S_STATE_NOT_READY,                                                      \
+		.tx_stop_without_draining = true,                                                  \
+		.clk_info = {0}};                                                                  \
                                                                                                    \
 	static const struct i2s_esp32_cfg i2s_esp32_config_##index = {                             \
 		.unit = DT_PROP(DT_DRV_INST(index), unit),                                         \
