@@ -19,3 +19,9 @@ tests:
       - cc1352p7_lp
     extra_configs:
       - CONFIG_OT_COAP_SAMPLE_SERVER=y
+  sample.net.openthread.fdt.coap.esp32_eth_openthread_rcp_host:
+    build_only: true
+    extra_args:
+      - EXTRA_CONF_FILE="overlay-ot-rcp-host-eth-esp32.conf"
+    platform_allow:
+      - esp32s3_devkitc/esp32s3/procpu
