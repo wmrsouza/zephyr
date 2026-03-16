@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 Espressif Systems (Shanghai) Co., Ltd.
+ * Copyright (c) 2024-2026 Espressif Systems (Shanghai) Co., Ltd.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -846,8 +846,9 @@ SECTIONS
     *(.sbss2.*)
     *(.gnu.linkonce.sb2.*)
     *(.dynbss)
-    *(.bss)
-    *(.bss.*)
+
+#include <esp_spiram_relocate_bss.ld.inc>
+
     *(.share.mem)
     *(.gnu.linkonce.b.*)
     *(COMMON)
@@ -1037,6 +1038,8 @@ SECTIONS
     _ext_ram_bss_start = ABSOLUTE(.);
     *(.ext_ram.bss*)
     . = ALIGN(16);
+
+#include <esp_spiram_relocate_bss_ext_ram.ld.inc>
 
     /* Custom modules sections list */
     KEEP(*(.lvgl_buf*))
