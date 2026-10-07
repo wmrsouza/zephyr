@@ -3298,6 +3298,7 @@ Espressif Platforms:
     - drivers/wifi/esp_at/
     - drivers/misc/esp_hosted_mcu/
     - drivers/misc/espressif_sdm/
+    - samples/drivers/misc/espressif_sdm/
     - drivers/bluetooth/hci/hci_esp_hosted_mcu.c
   file-groups:
     - name: Espressif hosted Wi-Fi driver
