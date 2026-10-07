@@ -1780,6 +1780,7 @@ New Drivers
 * Miscellaneous
 
   * :dtcompatible:`adi,tmc6460` (:github:`113438`)
+  * :dtcompatible:`espressif,esp32-sdm`
   * :dtcompatible:`nxp,imx93-video-pll` (:github:`98554`)
   * :dtcompatible:`nxp,mcxw-hw-params` (:github:`108974`)
   * :dtcompatible:`ti,tdp2004` (:github:`111950`)
